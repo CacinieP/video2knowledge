@@ -76,6 +76,52 @@ python3 scripts/mm_caption.py \
 
 ---
 
+## 🎯 实际效果演示
+
+下面是一段 **NASA 公有领域视频**（Curiosity 火星车着陆后 Adam Steltzner 的发言，2分25秒，英文，[来源](https://commons.wikimedia.org/wiki/File:Curiosity_Rover_Begins_Mars_Mission_August_6_2012_-_Adam_Steltzner_speech.webm)，Public Domain）经过完整流水线后的真实产出。
+
+**输入字幕（`subtitles.srt`，faster-whisper small 模型，19 段，前 3 段）：**
+```
+1
+00:00:02,060 --> 00:00:03,580
+Say something profound.
+
+2
+00:00:06,540 --> 00:00:09,280
+I am terribly humbled by this experience.
+
+3
+00:00:11,840 --> 00:00:20,600
+I forever secretly have felt that I do not deserve to be in the
+position of leading the...
+```
+
+**生成的知识文档摘要（`knowledge.md`）：**
+> The video explores the profound humility felt by a scientist who acknowledges
+> his own limitations while recognizing the immense value of working with a
+> diverse team at JPL, highlighting how collective effort and individual
+> contributions can achieve great things together... underscoring the importance
+> of appreciating both the small details of daily tasks and the larger
+> achievements achieved through unity.
+
+**核心知识点（自动提炼）：**
+- Leading requires recognizing individual contributions.
+- Team success depends on diverse skills and perspectives.
+- Humility is essential for learning from others.
+- Every great achievement involves collaboration.
+
+**知识卡片（`cards.csv` → `cards.apkg`，可直接导入 Anki）：**
+
+| Question | Answer |
+|---|---|
+| How does the speaker feel about leading a team? | Expresses humility — "secretly have felt that I do not deserve to be in the position of leading." |
+| What is the significance of the EDL team? | Described as talent at JPL, emphasizing collective skill and mission contribution. |
+| Why does the speaker believe this nation represents humanity? | A "corner of humanity that reaches out and explores," highlighting its role in exploration. |
+
+> 💡 **提示**：英文视频请加 `--lang en`（中文视频用默认 `--lang zh`）。小模型（1B）若语言不匹配会把示例内容串进产出。
+
+---
+
 ## 🖥️ 硬件适配（自动）
 
 不用手动挑模型大小——`scripts/hardware_profile.py` 会检测并匹配：

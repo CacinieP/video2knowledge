@@ -129,13 +129,18 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-def build_analysis(host: str, model: str | None, raw_text: str, source: str) -> dict:
+def build_analysis(host: str, model: str | None, raw_text: str, source: str,
+                   lang: str = "zh") -> dict:
     """Ask the LLM for summary / timeline / key points / QA / glossary.
 
     Strategy: call the model once PER field with a narrow, plain-markdown prompt.
     Small local models follow simple single-task prompts far more reliably than a
     single complex JSON request. Falls back to a heuristic if no model is reachable
     or a field comes back empty.
+
+    `lang` selects the prompt language ("zh" or "en") — match it to the video's
+    language so a Chinese-centric 1B model does not hallucinate cross-language
+    content when summarizing foreign-language subtitles.
     """
     fields = {
         "summary": "", "timeline": "", "key_points": "",
@@ -145,49 +150,99 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str) -> 
         return _heuristic_fallback(raw_text, fields)
 
     sub = raw_text[:8000]
-    tasks = [
-        ("summary",
-         "任务：读懂下面这段视频字幕，然后用中文写3-5句话总结它的核心内容与目的。\n"
-         "要求：\n"
-         "- 用自己的话概括，禁止照抄字幕原句\n"
-         "- 只输出总结正文，不要前缀、不要小标题\n"
-         "- 示例风格：\"本视频介绍了XX的使用方法，重点演示了A、B、C三个核心功能，"
-         "并说明了D的注意事项，帮助用户快速上手。\""),
-        ("timeline",
-         "任务：从下面这段视频字幕中，提炼最多8个关键操作/事件节点。\n"
-         "要求：\n"
-         "- 每行格式严格为 `- [mm:ss] 概括性事件描述(不超过15字)`\n"
-         "- 事件描述要概括，不要照抄原句\n"
-         "- 只输出列表，不要前缀\n"
-         "- 示例：`- [00:15] 设置本地同步目录`"),
-        ("key_points",
-         "任务：从下面这段视频字幕中，提炼最多8个核心知识点/操作要点。\n"
-         "要求：\n"
-         "- 每行格式 `- 知识点(一句话概括)`\n"
-         "- 要点是提炼后的结论，禁止照抄字幕原句\n"
-         "- 只输出列表\n"
-         "- 示例：`- 修改文件后所有设备会自动同步`"),
-        ("qa",
-         "任务：基于下面这段视频字幕，设计6到10组中文问答，用于学习测试。\n"
-         "严格要求（必须遵守）：\n"
-         "- 每组两行：第一行 `Q: 问题`，第二行 `A: 答案`\n"
-         "- 问题和答案都必须能从字幕中找到依据，禁止编造字幕里没有的内容\n"
-         "- 问题用疑问句(如\"如何...?\"\"...是什么?\"\"在哪里...?\")\n"
-         "- 答案用自然语言回答，不要照抄字幕原句，但内容必须忠于字幕\n"
-         "- 只输出问答，不要前缀、不要编号、不要解释\n"
-         "- 示例（假设字幕提到历史版本功能）：\n"
-         "  Q: 如何恢复文件到之前的版本?\n"
-         "  A: 右键点击文件选择历史版本，即可还原。"),
-        ("glossary",
-         "任务：从下面这段视频字幕中，提取最重要的术语/专有名词。\n"
-         "要求：\n"
-         "- 每行格式 `- 术语`\n"
-         "- 只保留名词性术语，不要整句\n"
-         "- 只输出列表\n"
-         "- 示例：`- 同步空间`"),
-    ]
+    # Bilingual prompt sets. Match `lang` to the video's language to stop a
+    # Chinese-centric small model from hallucinating cross-language content.
+    TASKS = {
+        "zh": [
+            ("summary",
+             "任务：读懂下面这段视频字幕，然后用中文写3-5句话总结它的核心内容与目的。\n"
+             "要求：\n"
+             "- 用自己的话概括，禁止照抄字幕原句\n"
+             "- 只输出总结正文，不要前缀、不要小标题\n"
+             "- 示例风格：\"本视频介绍了XX的使用方法，重点演示了A、B、C三个核心功能，"
+             "并说明了D的注意事项，帮助用户快速上手。\""),
+            ("timeline",
+             "任务：从下面这段视频字幕中，提炼最多8个关键操作/事件节点。\n"
+             "要求：\n"
+             "- 每行格式严格为 `- [mm:ss] 概括性事件描述(不超过15字)`\n"
+             "- 事件描述要概括，不要照抄原句\n"
+             "- 只输出列表，不要前缀\n"
+             "- 示例：`- [01:20] 讲者引出主题`"),
+            ("key_points",
+             "任务：从下面这段视频字幕中，提炼最多8个核心知识点/操作要点。\n"
+             "要求：\n"
+             "- 每行格式 `- 知识点(一句话概括)`\n"
+             "- 要点是提炼后的结论，禁止照抄字幕原句\n"
+             "- 只输出列表\n"
+             "- 示例：`- 明确目标能提升专注力与成效`"),
+            ("qa",
+             "任务：基于下面这段视频字幕，设计6到10组中文问答，用于学习测试。\n"
+             "严格要求（必须遵守）：\n"
+             "- 每组两行：第一行 `Q: 问题`，第二行 `A: 答案`\n"
+             "- 问题和答案都必须能从字幕中找到依据，禁止编造字幕里没有的内容\n"
+             "- 问题用疑问句(如\"如何...?\"\"...是什么?\"\"在哪里...?\")\n"
+             "- 答案用自然语言回答，不要照抄字幕原句，但内容必须忠于字幕\n"
+             "- 只输出问答，不要前缀、不要编号、不要解释\n"
+             "- 示例（通用示例，非字幕内容）：\n"
+             "  Q: 这段话的核心观点是什么?\n"
+             "  A: 协作是成就伟业的关键。"),
+            ("glossary",
+             "任务：从下面这段视频字幕中，提取最重要的术语/专有名词。\n"
+             "要求：\n"
+             "- 每行格式 `- 术语(1-3个字/词)`\n"
+             "- 只保留名词性术语，不要整句\n"
+             "- 只输出列表\n"
+             "- 示例：`- 重力`"),
+        ],
+        "en": [
+            ("summary",
+             "Task: Read the video subtitles below, then write a 3-5 sentence English "
+             "summary of the core content and purpose.\n"
+             "Rules:\n"
+             "- Paraphrase in your own words; do NOT copy subtitle sentences verbatim\n"
+             "- Output only the summary body, no heading, no preamble\n"
+             "- Example style: \"This video presents X. It highlights A, B, and C, and "
+             "notes the caveat D, helping the viewer quickly understand Y.\""),
+            ("timeline",
+             "Task: Extract up to 8 key events / milestones from the subtitles below.\n"
+             "Rules:\n"
+             "- Each line strictly formatted as `- [mm:ss] concise event (<=12 words)`\n"
+             "- Paraphrase the event, do NOT copy subtitle sentences\n"
+             "- Output only the list, no preamble\n"
+             "- Example: `- [01:20] the speaker introduces the main topic`"),
+            ("key_points",
+             "Task: Extract up to 8 core takeaways / points from the subtitles below.\n"
+             "Rules:\n"
+             "- Each line formatted as `- key point (one short sentence)`\n"
+             "- Points must be distilled conclusions, NOT verbatim subtitle lines\n"
+             "- Output only the list\n"
+             "- Example: `- clear goals improve focus and outcomes`"),
+            ("qa",
+             "Task: Based on the subtitles below, design 6 to 10 English Q&A pairs "
+             "for a study quiz.\n"
+             "Strict rules (must follow):\n"
+             "- Two lines per pair: first `Q: question`, then `A: answer`\n"
+             "- Both question and answer must be grounded in the subtitles; do NOT "
+             "invent content not present in the subtitles\n"
+             "- Questions must be interrogative (\"How...?\", \"What is...?\", \"Where...?\")\n"
+             "- Answers in natural language, paraphrased but faithful to the subtitles\n"
+             "- Output only Q&A pairs, no preamble, no numbering, no commentary\n"
+             "- Example (generic, not from subtitles):\n"
+             "  Q: What is the main message of the talk?\n"
+             "  A: It argues that collaboration drives great achievements."),
+            ("glossary",
+             "Task: Extract the most important terms / proper nouns from the subtitles below.\n"
+             "Rules:\n"
+             "- Each line formatted as `- term`\n"
+             "- Keep only noun-like terms (1-3 words), not full sentences\n"
+             "- Output only the list\n"
+             "- Example: `- gravity`"),
+        ],
+    }
+    tasks = TASKS.get(lang, TASKS["en"])
+    sublabel = "字幕" if lang == "zh" else "subtitles"
     for key, instruction in tasks:
-        resp = ask_llm(host, model, instruction + "\n\n字幕:\n" + sub)
+        resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + sub)
         if resp and len(resp.strip()) > 3:
             # Models sometimes wrap markdown in ``` fences — strip them for clean MD.
             cleaned = re.sub(r"^```[a-zA-Z]*\s*\n?", "", resp.strip())
@@ -316,6 +371,9 @@ def main() -> int:
     ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm5:Q4_K_M"),
                     help="Ollama text model for summarization/QA")
     ap.add_argument("--title", default=None, help="document title (default: video basename)")
+    ap.add_argument("--lang", choices=["zh", "en"], default="zh",
+                    help="prompt/output language for summary/QA (default zh; set to en "
+                         "for English videos to avoid cross-language hallucination)")
     ap.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     args = ap.parse_args()
 
@@ -335,7 +393,7 @@ def main() -> int:
     print(f"[v2k] {len(segs)} segments, {duration:.0f}s; summarizing with {args.model}...",
           file=sys.stderr)
 
-    analysis = build_analysis(args.host, args.model, raw_text, source)
+    analysis = build_analysis(args.host, args.model, raw_text, source, lang=args.lang)
 
     def as_md(v) -> str:
         """Coerce any analysis value into a markdown string for template/HTML."""
