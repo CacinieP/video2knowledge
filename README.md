@@ -3,8 +3,8 @@
 > 把视频变成**带时间戳的字幕 → 结构化知识文档 → HTML / Anki 卡片**。两条本地推理路径，**全程在本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#-从零开始安装5-分钟)
-[![Models](https://img.shields.io/badge/models-local-faster--whisper%20%2F%20ollama-green.svg)](#两条路径)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install-from-scratch)
+[![Models](https://img.shields.io/badge/models-local-faster--whisper%20%2F%20ollama-green.svg)](#paths)
 
 ---
 
@@ -20,6 +20,8 @@
 | 🃏 **知识卡片 CSV** | `cards.csv` | question / answer / tags / timestamp / source |
 | 📚 **Anki 牌组** | `cards.apkg` | 稳定 ID，重复导入不重复，开箱即用 |
 
+<a id="paths"></a>
+
 **两条路径**任选或并用：
 
 - **路径 1 · 多模态**：原生多模态小模型（≤4B VLM，经 Ollama）逐帧读视频 → 带时间戳字幕。适合**无音轨 / 纯画面 / 屏幕录制 / 演示文稿**，能抓 ASR 看不见的屏幕文字和图表。
@@ -30,6 +32,8 @@
 ---
 
 ## 🧱 从零开始安装（5 分钟）
+
+<a id="install-from-scratch"></a>
 
 假设你是一台**干净的系统**（没装 ollama / ffmpeg / python），下面四步就能从 0 跑通。
 
