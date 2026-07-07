@@ -5,12 +5,13 @@ timestamps, emitting SRT/VTT/JSON subtitles.
 This is the recommended path when the video has a clear speech track (lectures,
 talks, interviews): it is faster and more accurate than visual captioning.
 
-Default model is 'small' (good fit for 8GB-RAM machines). Upgrade to
-'medium' or 'large-v3' on >=16GB RAM via --model.
+The default --model / --compute-type / --device are auto-selected from the host's
+hardware profile (see scripts/hardware_profile.py). Override any of them on the
+CLI; the warnings are driven by the detected profile, not a hardcoded RAM number.
 
 Usage:
-    python3 asr_caption.py --video in.mp4 --out-dir out \\
-        --model small --language zh
+    python3 asr_caption.py --video in.mp4 --out-dir out --language zh
+    python3 asr_caption.py --video in.mp4 --out-dir out --model large-v3   # explicit override
 
 Outputs (in --out-dir):
     subtitles.srt   # timestamped subtitles
@@ -26,6 +27,26 @@ import subprocess
 import sys
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+HP = HERE / "hardware_profile.py"
+
+
+def _hp(key: str, fallback: str) -> str:
+    """Read a default from hardware_profile.py; fall back if detection fails."""
+    try:
+        out = subprocess.run([sys.executable, str(HP), "--key", key],
+                             capture_output=True, text=True, check=True, timeout=10)
+        v = out.stdout.strip()
+        return v or fallback
+    except Exception:
+        return fallback
+
+
+DEFAULT_MODEL = _hp("asr_model", "small")
+DEFAULT_COMPUTE = _hp("compute_type", "int8")
+DEFAULT_DEVICE = _hp("device", "cpu")
+DETECTED_PROFILE = _hp("profile", "unknown")
+DETECTED_RAM = float(_hp("ram_gb", "0") or "0")
 MODEL_WARN = {"large", "large-v1", "large-v2", "large-v3", "medium"}
 
 
@@ -68,21 +89,26 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="faster-whisper ASR -> timestamped subtitles")
     ap.add_argument("--video", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
-    ap.add_argument("--model", default="small",
-                    help="whisper model size: tiny/base/small/medium/large-v3 (default small)")
+    ap.add_argument("--model", default=DEFAULT_MODEL,
+                    help=f"whisper model size: tiny/base/small/medium/large-v3 "
+                         f"(default {DEFAULT_MODEL}, from hardware profile)")
     ap.add_argument("--language", default="zh", help="language code or 'auto'")
-    ap.add_argument("--device", default="cpu",
-                    help="cpu (default, safest) | cuda | auto")
-    ap.add_argument("--compute-type", default="int8",
-                    help="int8 (default) | int8_float16 | float16 | float32")
+    ap.add_argument("--device", default=DEFAULT_DEVICE,
+                    help=f"cpu | cuda | auto (default {DEFAULT_DEVICE}, from profile)")
+    ap.add_argument("--compute-type", default=DEFAULT_COMPUTE,
+                    help=f"int8 | int8_float16 | float16 | float32 "
+                         f"(default {DEFAULT_COMPUTE}, from profile)")
     args = ap.parse_args()
 
     if not args.video.is_file():
         print(f"[err] video not found: {args.video}", file=sys.stderr)
         return 2
-    if args.model in MODEL_WARN and os_total_ram_gb() < 16:
-        print(f"[warn] model '{args.model}' may exhaust RAM on <16GB machines. "
-              f"Consider --model small.", file=sys.stderr)
+    # Warn when a heavy model is forced on a low-RAM profile.
+    if args.model in MODEL_WARN and DETECTED_RAM and DETECTED_RAM < 16 \
+            and DETECTED_PROFILE != "high-gpu":
+        print(f"[warn] model '{args.model}' may exhaust RAM on this machine "
+              f"(profile={DETECTED_PROFILE}, {DETECTED_RAM}GB). "
+              f"Suggested for this profile: {DEFAULT_MODEL}.", file=sys.stderr)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -121,15 +147,6 @@ def main() -> int:
 
     print(f"[ok] {len(segs)} segments -> {args.out_dir}/subtitles.{{srt,vtt,json}}")
     return 0
-
-
-def os_total_ram_gb() -> float:
-    try:
-        import subprocess
-        out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
-        return int(out.stdout.strip()) / 1073741824
-    except Exception:
-        return 16.0  # assume safe
 
 
 if __name__ == "__main__":

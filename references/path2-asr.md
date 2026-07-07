@@ -13,28 +13,36 @@ the recommended path whenever the video has a clear speech track.
 Avoid Path 2 when: the video is silent/slide-only, audio is non-speech, or you
 need what is visually on screen (use Path 1 or run both).
 
-## Model sizing (important on 8 GB RAM)
+## Model sizing
 
-faster-whisper loads into RAM/VRAM at `compute_type=int8` by default.
+The default `--model` / `--compute-type` / `--device` are **auto-selected from
+your hardware profile** (`scripts/hardware_profile.py`) — you don't have to size
+them by hand. The table below shows the RAM footprint at `compute_type=int8` so
+you understand what the profile picker chose; see
+`references/hardware-profiles.md` for the full profile → model mapping.
 
-| Model | RAM (int8) | Word timestamps | Recommendation |
+| Model | RAM (int8) | Word timestamps | Profile that picks it |
 |---|---|---|---|
-| `tiny` | ~0.5 GB | rough | quick & dirty |
-| `base` | ~0.7 GB | ok | short clips |
-| **`small`** | ~1.2 GB | good | **default — best for 8 GB** |
-| `medium` | ~3.5 GB | great | ≥16 GB RAM only |
-| `large-v3` | ~6.5 GB | best | ≥16 GB RAM only |
+| `tiny` | ~0.5 GB | rough | `tiny` (RAM < 6 GB) |
+| `base` | ~0.7 GB | ok | `low` (6–8 GB, no dGPU) |
+| `small` | ~1.2 GB | good | `low-mac`, `mid` (8–16 GB) |
+| `medium` | ~3.5 GB | great | `high` (16–32 GB) |
+| `large-v3` | ~6.5 GB | best | `high-gpu`, `max` |
 
-`asr_caption.py` **warns** (but does not block) if you pick `medium`/`large*` on a
-machine reporting <16 GB. On the A18 Pro / 8 GB target, stick to `small`.
+`asr_caption.py` **warns** (but does not block) if you force a heavy model on a
+low-RAM profile. Override explicitly with `--model`.
 
 ## Device & compute type
 
-- `--device cpu` (default): fastest, most reliable on macOS. faster-whisper uses
-  CTranslate2 which has limited MPS support; CPU `int8` is the safe default.
-- `--device auto`: let the library choose (may pick Metal on newer builds).
-- `--compute-type int8` (default): smallest memory, good speed. Use
-  `int8_float16` on Apple Silicon if you observe good CPU/GPU balance.
+These come from the hardware profile. The defaults by profile:
+
+- **Apple Silicon / CPU-only** (`mid`, `low`, `low-mac`): `device=cpu`,
+  `compute=int8`. faster-whisper (CTranslate2) has limited Metal support; CPU
+  int8 is the fastest, most reliable path on macOS.
+- **16 GB+** (`high`): `device=auto`, `compute=int8_float16`.
+- **NVIDIA** (`high-gpu`): `device=cuda`, `compute=float16` — large speedup.
+
+Override per-run with `--device` and `--compute-type`.
 
 ## Language
 

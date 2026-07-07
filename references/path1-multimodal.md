@@ -16,16 +16,21 @@ granularity), so prefer Path 2 when a clean speech track exists.
 
 ## Model
 
-Default: `openbmb/minicpm-v4.6:latest` (~1.6 GB, native VLM, ≤4B params).
-Already present if `setup_models.sh` was run. Alternatives that work the same way:
+The default VLM is **picked by your hardware profile** (`scripts/hardware_profile.py`):
 
-| Model | Size | Good for |
+| Profile | VLM | Size |
 |---|---|---|
-| `openbmb/minicpm-v4.6:latest` | 1.6 GB | default, balanced |
-| `moondream` (via `ollama pull moondream`) | ~1.6 GB | very fast, terse captions |
-| `qwen2.5vl:3b` (if available) | ~2 GB | strong OCR / on-screen text |
+| `tiny` (RAM < 6 GB) | `moondream` | ~1.6 GB |
+| `low` / `low-mac` / `mid` (6–16 GB) | `openbmb/minicpm-v4.6:latest` | 1.6 GB |
+| `high` (16–32 GB) | `qwen2.5vl:3b` | ~2 GB |
+| `high-gpu` / `max` | `qwen2.5vl:7b` | ~4.5 GB |
 
-Override with `--model`.
+On the most common machines (8–16 GB) this resolves to `minicpm-v4.6`, which is
+the tested default. Override with `--model` or `VLM_MODEL=`. Full profile table
+in `references/hardware-profiles.md`.
+
+Other VLMs that work the same way (via `ollama pull`):
+`moondream` (very fast, terse), `qwen2.5vl:3b` (strong OCR / on-screen text).
 
 ## Ollama vision API
 
@@ -80,12 +85,12 @@ preamble. Edit `PROMPT` in the script to change language/style globally.
 `captions.json` is consumed by `build_knowledge.py` exactly like Path 2's
 `subtitles.json` (the loader detects the schema automatically).
 
-## Memory on 8 GB machines
+## Memory
 
-MiniCPM-V 4.6 at Q4 fits comfortably in 8 GB alongside macOS. The script captions
-**sequentially** (one frame at a time) with no batching, which keeps peak memory
-flat. If you switch to a bigger VLM and hit OOM, raise `--interval` to reduce frame
-count, or stop other apps.
+Peak memory is flat because the script captions **sequentially** (one frame at a
+time, no batching). The profile picker already matches the VLM size to your RAM
+(see table above). If you override to a bigger VLM and hit OOM, raise `--interval`
+to reduce frame count, or close other apps.
 
 ## End-to-end example
 

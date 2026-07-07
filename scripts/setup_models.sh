@@ -8,9 +8,26 @@
 # Safe to re-run: existing artifacts are skipped. Prints clear status for traceability.
 set -euo pipefail
 
-VLM_MODEL="${VLM_MODEL:-openbmb/minicpm-v4.6:latest}"
 VENV_DIR="${VENV_DIR:-$HOME/.zcode/skills/video2knowledge/.venv}"
-ASR_DEFAULT_MODEL="${ASR_DEFAULT_MODEL:-small}"   # small fits 8GB RAM; bump to medium/large-v3 if you have >=16GB
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- auto-detect hardware profile (scripts/hardware_profile.py) -------------
+# Reads the single source of truth. Override any field with env vars if needed.
+if command -v python3 >/dev/null 2>&1; then
+  PROFILE_JSON="$(python3 "$HERE/hardware_profile.py" --json)"
+  hp() { python3 -c "import sys,json;print(json.loads('''$PROFILE_JSON''').get('$1',''))"; }
+  : "${VLM_MODEL:=$(hp vlm_model)}"
+  : "${ASR_DEFAULT_MODEL:=$(hp asr_model)}"
+  : "${ASR_COMPUTE_TYPE:=$(hp compute_type)}"
+  : "${ASR_DEVICE:=$(hp device)}"
+  HP_PROFILE="$(hp profile)"
+else
+  : "${VLM_MODEL:=openbmb/minicpm-v4.6:latest}"
+  : "${ASR_DEFAULT_MODEL:=small}"
+  : "${ASR_COMPUTE_TYPE:=int8}"
+  : "${ASR_DEVICE:=cpu}"
+  HP_PROFILE="(python3 missing — defaults)"
+fi
 
 log() { printf '[setup] %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -68,8 +85,10 @@ fi
 cat <<EOF
 
 [setup] DONE
-  VLM  : $VLM_MODEL
-  ASR  : faster-whisper (default model '$ASR_DEFAULT_MODEL', downloaded on first run)
-  venv : $VENV_DIR
-  Activate with:  source $VENV_DIR/bin/activate
+  profile       : $HP_PROFILE
+    -> VLM      : $VLM_MODEL
+    -> ASR      : faster-whisper '$ASR_DEFAULT_MODEL' (compute=$ASR_COMPUTE_TYPE, device=$ASR_DEVICE)
+  venv          : $VENV_DIR
+  Override with : VLM_MODEL=... ASR_DEFAULT_MODEL=... bash setup_models.sh
+  Activate with : source $VENV_DIR/bin/activate
 EOF

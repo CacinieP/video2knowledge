@@ -26,10 +26,19 @@ Required on the host: `ollama`, `ffmpeg`, `python3` (or `uv`). One-time:
 bash scripts/setup_models.sh
 ```
 
-This (idempotently) pulls the VLM `openbmb/minicpm-v4.6:latest`, creates a venv at
-`.venv/`, and installs `faster-whisper` + `genanki`. Whisper model weights download
-on first transcription. **On 8 GB RAM machines the ASR default is `small`** (see
-`references/path2-asr.md` for sizing).
+This (idempotently) **auto-detects your machine's hardware profile** (RAM / GPU /
+Apple Silicon / NVIDIA) via `scripts/hardware_profile.py`, then pulls the
+recommended VLM, creates a venv at `.venv/`, and installs `faster-whisper` +
+`genanki`. See what it picked:
+
+```bash
+python3 scripts/hardware_profile.py
+```
+
+Profiles range from `tiny` (4 GB machines → whisper-tiny + moondream) through
+`high-gpu` (NVIDIA ≥8 GB → whisper-large-v3 + qwen2.5vl:7b on CUDA). Full table
+and tuning in `references/hardware-profiles.md`. Override any choice with env
+vars (`VLM_MODEL=`, `ASR_DEFAULT_MODEL=`, ...) or CLI flags.
 
 Activate the venv before running any python step:
 
@@ -171,7 +180,8 @@ git add "$RUN" && git commit -m "run: lecture path=2 model=small" && git push
 
 | Script | Purpose |
 |---|---|
-| `scripts/setup_models.sh` | Idempotent model/venv setup (VLM pull + pip) |
+| `scripts/setup_models.sh` | Idempotent model/venv setup (profile-aware) |
+| `scripts/hardware_profile.py` | Detect machine → recommend ASR/VLM/backend profile |
 | `scripts/extract_frames.py` | ffmpeg frame sampling → `frames.json` |
 | `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}` |
 | `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}` |
@@ -180,6 +190,7 @@ git add "$RUN" && git commit -m "run: lecture path=2 model=small" && git push
 
 ## References (load as needed)
 
+- `references/hardware-profiles.md` — profile table, sizing rationale, tuning
 - `references/path1-multimodal.md` — VLM details, API format, sampling strategy
 - `references/path2-asr.md` — model sizing, device/compute, language options
 - `references/templates.md` — placeholder spec + custom template examples
