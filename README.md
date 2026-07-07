@@ -77,9 +77,22 @@ bash scripts/setup_models.sh
 
 1. **自动检测你的机型**（RAM / GPU / Apple Silicon / NVIDIA），按档位挑模型；
 2. 启动 `ollama serve` 并拉取对应的 **VLM**（多模态，路径 1 用）；
-3. 在 `~/.zcode/skills/video2knowledge/.venv` 建一个 venv，装好 `faster-whisper` + `genanki`。
+3. 建一个 venv，装好 `faster-whisper` + `genanki`。
 
 跑完会打印一段总结，**注意看最后一行 `Activate with:`**，那是要复制的激活命令。
+
+**venv 建在哪里，由环境变量 `VENV_DIR` 决定**，两种选法：
+
+```bash
+# 方式 A（推荐给从 GitHub clone 的用户）：建在仓库内，直观、好找
+VENV_DIR=.venv bash scripts/setup_models.sh
+
+# 方式 B（脚本默认）：建在 ~/.zcode/skills/video2knowledge/.venv
+#   —— 这是 ZCode skill 场景下的固定路径。直接跑就是它：
+bash scripts/setup_models.sh
+```
+
+> 下面所有示例统一用方式 A（`source .venv/bin/activate`）；如果你用了方式 B，把激活命令换成 `setup_models.sh` 末尾打印的那行即可。
 
 看看它给你选了什么档位：
 
@@ -97,12 +110,14 @@ python3 scripts/hardware_profile.py
 ### 第 3 步 · 激活 venv（每次新开终端都要做）
 
 ```bash
-# 路径以 setup_models.sh 末尾打印的为准（默认如下）：
+# 用了上面的方式 A（仓库内 venv）：
+source .venv/bin/activate
+
+# 用了方式 B（脚本默认路径）：
 source ~/.zcode/skills/video2knowledge/.venv/bin/activate
 ```
 
-> 想让 venv 直接建在仓库内？跑 setup 时覆盖一下环境变量即可：
-> `VENV_DIR=.venv bash scripts/setup_models.sh`，之后用 `source .venv/bin/activate`。
+> 不确定自己用了哪种？跑 `ls .venv/bin/activate 2>/dev/null` —— 有输出就是方式 A，否则就是方式 B。
 
 到这里环境就装好了。下面正式处理视频。
 
@@ -113,7 +128,7 @@ source ~/.zcode/skills/video2knowledge/.venv/bin/activate
 ### A. 路径 2 · ASR（有语音的视频，推荐先试）
 
 ```bash
-source ~/.zcode/skills/video2knowledge/.venv/bin/activate   # 激活 venv
+source .venv/bin/activate   # 激活 venv（用了方式 B 则换成 setup_models.sh 打印的那行）
 
 # 第一步：视频 → 字幕
 python3 scripts/asr_caption.py \
@@ -245,7 +260,11 @@ python3 scripts/build_knowledge.py \
 <details>
 <summary><b>Q: 激活 venv 的命令到底是什么路径？</b></summary>
 
-默认是 `~/.zcode/skills/video2knowledge/.venv`，但**以 `setup_models.sh` 末尾打印的那行为准**。也可以用 `VENV_DIR=.venv bash scripts/setup_models.sh` 把 venv 建在仓库内，之后 `source .venv/bin/activate` 即可。
+由 `setup_models.sh` 的 `VENV_DIR` 决定：
+- **仓库内**（方式 A，推荐）：跑 `VENV_DIR=.venv bash scripts/setup_models.sh`，之后 `source .venv/bin/activate`。
+- **固定路径**（方式 B，脚本默认）：`source ~/.zcode/skills/video2knowledge/.venv/bin/activate`。
+
+始终**以 `setup_models.sh` 末尾 `Activate with:` 打印的那行为准**。
 </details>
 
 <details>
