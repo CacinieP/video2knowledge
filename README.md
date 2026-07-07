@@ -119,6 +119,25 @@ source ~/.zcode/skills/video2knowledge/.venv/bin/activate
 
 > 不确定自己用了哪种？跑 `ls .venv/bin/activate 2>/dev/null` —— 有输出就是方式 A，否则就是方式 B。
 
+### 第 4 步 ·（可选）作为 agent skill 使用
+
+本仓库自带 `SKILL.md`，可被各类 coding agent 自动加载，让你直接对 agent 说"用 video2knowledge 处理这个视频"即可。把整个仓库放进对应 agent 的 skills 目录即可（任选其一，不互斥）：
+
+| Agent | 安装目录 | 安装命令 |
+|---|---|---|
+| **ZCode** | `~/.zcode/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.zcode/skills/video2knowledge` |
+| **Claude Code** | `~/.claude/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.claude/skills/video2knowledge` |
+| **Cursor** | `~/.cursor/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.cursor/skills/video2knowledge` |
+
+> 仓库内置的 `scripts/setup_models.sh` 默认把 venv 建在 `~/.zcode/skills/video2knowledge/.venv`（即上表的 ZCode 行）。**装到其他 agent 目录时**，建议改用方式 A 把 venv 建在仓库内，避免路径错配：
+> ```bash
+> cd ~/.claude/skills/video2knowledge   # 或 ~/.cursor/skills/video2knowledge
+> VENV_DIR=.venv bash scripts/setup_models.sh
+> ```
+> 之后在该仓库内处理视频时统一用 `source .venv/bin/activate`。
+
+> 仅当不通过 agent、直接在终端用脚本时，可跳过本步——`SKILL.md` 是给 agent 读的，终端里用不到。
+
 到这里环境就装好了。下面正式处理视频。
 
 ---
