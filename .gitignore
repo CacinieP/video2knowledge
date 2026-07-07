@@ -3,12 +3,10 @@
 __pycache__/
 *.pyc
 
-# Large run intermediates we never want in git
-runs/*/frames/
-runs/*/audio_16k.wav
-runs/*/audio_16k.*
+# All run outputs stay local (videos, frames, subtitles, cards — never committed)
+runs/
 
-# Local video sources (keep only references in manifest.json)
+# Local video sources
 *.mp4
 *.mov
 *.mkv

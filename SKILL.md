@@ -1,22 +1,25 @@
 ---
 name: video2knowledge
 description: >-
-  Convert videos into timestamped subtitles and structured knowledge artifacts
-  with full GitHub traceability. Two ingestion paths: (1) a native multimodal
-  VLM (at most 4B params, via Ollama) reads sampled video frames into
-  timestamped captions; (2) faster-whisper ASR transcribes the audio into
-  timestamped subtitles. Then refine into a structured knowledge doc (custom
-  template supported), a self-contained HTML page, a knowledge-card CSV, and an
-  Anki apkg deck. Use when transcribing or summarizing a video, building study
-  cards from a lecture or recording, turning a silent or screen-recording video
-  into notes, or producing reviewable knowledge from any video file.
+  Convert videos into timestamped subtitles and structured knowledge artifacts.
+  Two ingestion paths: (1) a native multimodal VLM (at most 4B params, via
+  Ollama) reads sampled video frames into timestamped captions; (2)
+  faster-whisper ASR transcribes the audio into timestamped subtitles. Then
+  refine into a structured knowledge doc (custom template supported), a
+  self-contained HTML page, a knowledge-card CSV, and an Anki apkg deck.
+  Fully local — no video, audio, or output ever leaves the host; the repo
+  tracks only code and config changes. Use when transcribing or summarizing a
+  video, building study cards from a lecture or recording, turning a silent or
+  screen-recording video into notes, or producing reviewable knowledge from any
+  video file.
 ---
 
 # Video2Knowledge
 
 Turn a video into: **timestamped subtitles → knowledge doc → HTML / Anki cards**.
-Two local ingestion paths, all-local inference (no cloud API), every run committed
-to a public GitHub repo for traceability.
+Two local ingestion paths, all-local inference (no cloud API). **Processing stays
+fully local** — videos, subtitles, and outputs are never uploaded; they live in a
+local `runs/` folder (gitignored). The repo tracks only code/config changes.
 
 ## Prerequisites & First-Time Setup
 
@@ -120,43 +123,39 @@ Templates are plain Markdown using `{{placeholders}}` (`{{title}}`, `{{summary}}
 everything else stays verbatim. Full spec + 3 example templates
 (lecture / meeting / tutorial) in `references/templates.md`.
 
-## Traceability & GitHub Logging
+## Local-Only Processing & Change Tracking
 
-Every run **must** be committed to the skill repo (`CacinieP/video2knowledge`,
-public) for traceability. Workflow:
+**All video processing stays on your machine.** Videos, extracted frames,
+subtitles, knowledge docs, and cards are written to a local `runs/` folder that is
+**gitignored** — nothing about your media is ever uploaded or committed.
 
-1. Create a per-run folder: `runs/<YYYYMMDD-HHMMSS>-<video-basename>/`.
-2. Write all script outputs there (frames, subtitles, knowledge.md/html/csv, apkg).
-3. Write `runs/<...>/manifest.json` recording: source video path, path taken
-   (1/2/both), models, all CLI args, start/end time, output file list, success/fail.
-4. Commit and push:
+The GitHub repo tracks **only code and config changes** (scripts, references,
+templates, README). This gives a clear history of how the skill evolved, without
+exposing any user's media. Use descriptive `feat:`/`fix:`/`docs:` commit messages.
+
+If you want a local record of a specific run, write a `manifest.json` into that
+run folder (path taken, models, args, output list) — but keep it local:
 
 ```bash
-git add runs/<...>
-git commit -m "run(<ts>): <video-basename> path=<1|2> model=<...>"
-git push
+cat > "$RUN/manifest.json" <<EOF
+{"video":"~/Movies/lecture.mp4","path":"2","model":"small",
+ "outputs":["subtitles.srt","knowledge.md","knowledge.html","cards.csv","cards.apkg"]}
+EOF
 ```
-
-`runs/` and `.venv/` handling: commit `runs/`, **gitignore** `.venv/` and any large
-raw videos (keep only a path reference in `manifest.json`). Commit template and
-config changes to the skill itself with clear `feat:`/`fix:` messages.
-
-The public repo is the audit trail: anyone can reproduce a run from its
-`manifest.json` + the committed skill version.
 
 ## End-to-End Example
 
-ASR path on a lecture, full pipeline with traceability:
+ASR path on a lecture, full pipeline (everything stays local):
 
 ```bash
 source .venv/bin/activate
-RUN=runs/$(date +%Y%m%d-%H%M%S)-lecture
+RUN=runs/$(date +%Y%m%d-%HMMSS)-lecture
 mkdir -p "$RUN"
 
 # Step 1 — subtitles
 python3 scripts/asr_caption.py \
   --video ~/Movies/lecture.mp4 \
-  --out-dir "$RUN" --model small --language zh
+  --out-dir "$RUN" --language zh
 
 # Step 2 — knowledge doc / HTML / CSV
 python3 scripts/build_knowledge.py \
@@ -167,13 +166,10 @@ python3 scripts/build_knowledge.py \
 python3 scripts/gen_apkg.py \
   --csv "$RUN/cards.csv" --out "$RUN/cards.apkg"
 
-# Traceability
+# Optional local record (stays on your machine; runs/ is gitignored)
 cat > "$RUN/manifest.json" <<EOF
-{"video":"~/Movies/lecture.mp4","path":"2","model":"small",
- "language":"zh","outputs":["subtitles.srt","knowledge.md","knowledge.html",
- "cards.csv","cards.apkg"]}
+{"video":"~/Movies/lecture.mp4","path":"2","model":"small","outputs":["subtitles.srt","knowledge.md","knowledge.html","cards.csv","cards.apkg"]}
 EOF
-git add "$RUN" && git commit -m "run: lecture path=2 model=small" && git push
 ```
 
 ## Scripts Reference

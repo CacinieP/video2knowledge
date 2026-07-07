@@ -1,6 +1,6 @@
 # 🎬 video2knowledge
 
-> 把视频变成**带时间戳的字幕 → 结构化知识文档 → HTML / Anki 卡片**。两条本地推理路径，全本地、无云端 API，每次运行留痕到公开仓库可复现。
+> 把视频变成**带时间戳的字幕 → 结构化知识文档 → HTML / Anki 卡片**。两条本地推理路径，**全程在本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#硬件适配)
@@ -127,11 +127,13 @@ python3 scripts/build_knowledge.py \
 
 ---
 
-## 🔍 留痕（可复现）
+## 🔒 隐私与留痕
 
-每次运行建议放进 `runs/<时间戳>-<视频名>/`，并写一份 `manifest.json` 记录视频源、路径、模型、参数、产出清单。仓库本身即审计 trail——任何人能从 `manifest.json` + skill 版本复现一次运行。
+- **全程本地**：视频文件、抽帧、字幕、知识产物始终留在你机器上的 `runs/<时间戳>-<视频名>/`，绝不上传，不联网调用云 API。
+- **仓库只跟代码**：本仓库是 skill 本身（脚本/文档/模板）的版本管理，**不包含任何视频或处理产出**——`runs/` 已在 `.gitignore` 中忽略。代码与配置的修改都有 git 历史可追溯。
+- **本地复现**：要复现某次结果，在本地 `runs/<...>/` 里查看当次用的参数和产出即可（按需自行写 `manifest.json` 记录，但默认不入库）。
 
-`example/` 目录里有一份完整跑通的示例产出（ffmpeg testsrc 视频的多模态路径），`runs/` 里有真实中文视频（百度网盘同步空间教程）的 ASR 路径产出，可直接打开验收。
+`example/` 目录提供一份用 ffmpeg 合成视频跑通的示例产出（无真实数据，仅供演示结构与字段）。
 
 ---
 
@@ -155,9 +157,10 @@ video2knowledge/
 │   ├── templates.md
 │   └── outputs.md
 ├── assets/default-template.md     # 内置默认知识文档模板
-├── example/                       # 跑通的示例产出
-└── runs/                          # 真实视频测试产出（留痕）
+└── example/                       # 合成视频的示例产出（无真实数据）
 ```
+
+> 处理真实视频时，产出会写到本地 `runs/`（已 gitignore，不入库）。
 
 ---
 
