@@ -3,7 +3,7 @@
 > 把视频变成**带时间戳的字幕 → 结构化知识文档 → HTML / Anki 卡片**。两条本地推理路径，**全程在本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#硬件适配)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#-从零开始安装5-分钟)
 [![Models](https://img.shields.io/badge/models-local-faster--whisper%20%2F%20ollama-green.svg)](#两条路径)
 
 ---
@@ -29,33 +29,94 @@
 
 ---
 
-## 🚀 快速开始
+## 🧱 从零开始安装（5 分钟）
 
-### 1. 环境要求
+假设你是一台**干净的系统**（没装 ollama / ffmpeg / python），下面四步就能从 0 跑通。
 
-`ollama` + `ffmpeg` + `python3`（或 `uv`）。一键检查并下载模型：
+### 第 0 步 · 克隆仓库
+
+```bash
+git clone https://github.com/CacinieP/video2knowledge.git
+cd video2knowledge
+```
+
+### 第 1 步 · 安装系统依赖（三件套）
+
+需要三个命令行工具，按你的系统挑一组：
+
+**macOS（用 [Homebrew](https://brew.sh)）**
+```bash
+brew install ffmpeg python@3.11          # ffmpeg + python
+brew install ollama                       # 或去 https://ollama.com/download 下 Ollama.app
+```
+
+**Linux（apt，Debian/Ubuntu）**
+```bash
+curl -fsSL https://ollama.com/install.sh | sh          # ollama 官方脚本
+sudo apt update && sudo apt install -y ffmpeg python3 python3-venv
+```
+
+**Windows**
+- Ollama：<https://ollama.com/download> 下载安装包
+- ffmpeg / python：`winget install Gyan.FFmpeg Python.Python.3.11`
+- 建议在 **Git Bash** 或 **WSL** 里运行下面的命令
+
+> **检查**：`ollama --version && ffmpeg -version && python3 --version` 三条都有输出即可继续。
+
+### 第 2 步 · 一键下载模型 + 建虚拟环境
 
 ```bash
 bash scripts/setup_models.sh
 ```
 
-这个脚本会**自动检测你的机型**（RAM / GPU / Apple Silicon / NVIDIA），按档位推荐并拉取对应的 VLM、装好 faster-whisper + genanki。看它给你选了什么：
+这个脚本会做三件事（**幂等，可重复执行**）：
+
+1. **自动检测你的机型**（RAM / GPU / Apple Silicon / NVIDIA），按档位挑模型；
+2. 启动 `ollama serve` 并拉取对应的 **VLM**（多模态，路径 1 用）；
+3. 在 `~/.zcode/skills/video2knowledge/.venv` 建一个 venv，装好 `faster-whisper` + `genanki`。
+
+跑完会打印一段总结，**注意看最后一行 `Activate with:`**，那是要复制的激活命令。
+
+看看它给你选了什么档位：
 
 ```bash
 python3 scripts/hardware_profile.py
 # 例：8GB MacBook → profile=mid → whisper-small + minicpm-v4.6
 ```
 
-### 2. 一条命令跑通（路径 2 · ASR，推荐先试）
+> 💡 **下载慢 / 卡住？** 这些模型从 Ollama / PyPI 拉取，国内网络可设置代理提速：
+> ```bash
+> export HTTPS_PROXY=http://127.0.0.1:7890
+> bash scripts/setup_models.sh
+> ```
+
+### 第 3 步 · 激活 venv（每次新开终端都要做）
 
 ```bash
-source .venv/bin/activate
+# 路径以 setup_models.sh 末尾打印的为准（默认如下）：
+source ~/.zcode/skills/video2knowledge/.venv/bin/activate
+```
+
+> 想让 venv 直接建在仓库内？跑 setup 时覆盖一下环境变量即可：
+> `VENV_DIR=.venv bash scripts/setup_models.sh`，之后用 `source .venv/bin/activate`。
+
+到这里环境就装好了。下面正式处理视频。
+
+---
+
+## 🚀 处理第一个视频
+
+### A. 路径 2 · ASR（有语音的视频，推荐先试）
+
+```bash
+source ~/.zcode/skills/video2knowledge/.venv/bin/activate   # 激活 venv
 
 # 第一步：视频 → 字幕
 python3 scripts/asr_caption.py \
   --video your_video.mp4 --out-dir runs/demo --language zh
 
 # 第二步：字幕 → 知识文档 / HTML / 卡片 CSV
+# （首次运行会自动拉取文本模型 openbmb/minicpm5:Q4_K_M，几百 MB，稍等）
 python3 scripts/build_knowledge.py \
   --subtitles runs/demo/subtitles.json --out-dir runs/demo --format all
 
@@ -66,12 +127,14 @@ python3 scripts/gen_apkg.py \
 
 完成后 `runs/demo/` 里就有 `subtitles.srt`、`knowledge.md`、`knowledge.html`、`cards.csv`、`cards.apkg`。
 
-### 3. 路径 1 · 多模态（无音轨 / 屏幕录制）
+> 英文视频记得在第二步加 `--lang en`（默认 `zh`），否则小模型在语言不匹配时容易把示例内容串进产出。
+
+### B. 路径 1 · 多模态（无音轨 / 屏幕录制 / 演示文稿）
 
 ```bash
 python3 scripts/mm_caption.py \
   --video screen_recording.mp4 --out-dir runs/demo2 --interval 2.0
-# 再走同样的第二步
+# 再走同样的第二步（build_knowledge.py），输出与路径 2 完全一致
 ```
 
 ---
@@ -170,6 +233,40 @@ python3 scripts/build_knowledge.py \
   --subtitles runs/demo/subtitles.json --out-dir runs/demo \
   --template ./my-lecture-template.md --format knowledge
 ```
+
+---
+
+## ❓ 常见问题（从零开始最容易踩的坑）
+
+<details>
+<summary><b>Q: 激活 venv 的命令到底是什么路径？</b></summary>
+
+默认是 `~/.zcode/skills/video2knowledge/.venv`，但**以 `setup_models.sh` 末尾打印的那行为准**。也可以用 `VENV_DIR=.venv bash scripts/setup_models.sh` 把 venv 建在仓库内，之后 `source .venv/bin/activate` 即可。
+</details>
+
+<details>
+<summary><b>Q: 跑 <code>build_knowledge.py</code> 卡很久 / 报模型找不到？</b></summary>
+
+第二步会调用一个**文本模型** `openbmb/minicpm5:Q4_K_M`（用于摘要/知识点/Q&A），首次运行时 Ollama 会自动拉取，几百 MB，需要联网和等待。提前手动拉可避免等待意外：`ollama pull openbmb/minicpm5:Q4_K_M`。想换更大的模型提升质量：`--model qwen2.5:7b`。
+</details>
+
+<details>
+<summary><b>Q: 报错 <code>ollama not found</code> / <code>ffmpeg not found</code>？</b></summary>
+
+回【第 1 步】把对应工具装上并确认在 PATH 里：`ollama --version && ffmpeg -version`。Ollama 装好后若未常驻，`setup_models.sh` 会自动 `ollama serve` 拉起；若仍失败，手动开一个终端跑 `ollama serve`。
+</details>
+
+<details>
+<summary><b>Q: 模型 / pip 下载很慢或超时？</b></summary>
+
+国内网络建议挂代理：`export HTTPS_PROXY=http://127.0.0.1:7890`（端口换成你自己的）。pip 可换镜像：`pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple`。
+</details>
+
+<details>
+<summary><b>Q: Windows 上能跑吗？</b></summary>
+
+可以，建议在 **Git Bash** 或 **WSL** 里运行（脚本依赖 bash）。Ollama 用官方安装包，ffmpeg/python 用 `winget` 安装，venv 激活路径同样以 `setup_models.sh` 输出为准。
+</details>
 
 ---
 
