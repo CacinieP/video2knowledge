@@ -1,0 +1,11 @@
+1
+00:00:00,000 --> 00:00:02,000
+Color bars and test pattern diagram.
+
+2
+00:00:02,000 --> 00:00:04,000
+Color bars and black circle with "2".
+
+3
+00:00:04,000 --> 00:00:06,000
+Color bars and a digital '8' display.

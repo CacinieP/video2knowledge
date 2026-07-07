@@ -1,0 +1,12 @@
+{
+  "video": "/tmp/v2k-test/sample.mp4 (ffmpeg testsrc, 6s)",
+  "path": "1 (multimodal)",
+  "vlm_model": "openbmb/minicpm-v4.6:latest",
+  "text_model": "openbmb/minicpm5:Q4_K_M",
+  "asr_model": null,
+  "interval_sec": 2.0,
+  "frames": 3,
+  "segments": 3,
+  "outputs": ["captions.srt","captions.json","frames/frames.json","knowledge.md","knowledge.html","cards.csv","cards.apkg"],
+  "notes": "Smoke test on ffmpeg-generated test pattern. ASR path also verified separately (0 segments on sine-wave audio, as expected)."
+}

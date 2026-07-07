@@ -1,0 +1,17 @@
+[
+  {
+    "start": 0.0,
+    "end": 2.0,
+    "text": "Color bars and test pattern diagram."
+  },
+  {
+    "start": 2.0,
+    "end": 4.0,
+    "text": "Color bars and black circle with \"2\"."
+  },
+  {
+    "start": 4.0,
+    "end": 6.0,
+    "text": "Color bars and a digital '8' display."
+  }
+]

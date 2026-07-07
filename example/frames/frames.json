@@ -1,0 +1,20 @@
+{
+  "video": "/private/tmp/v2k-test/sample.mp4",
+  "interval": 2.0,
+  "fps": null,
+  "count": 3,
+  "frames": [
+    {
+      "file": "runs/20260707-161917-smoke-mm3/frames/frame_000001.jpg",
+      "t": 0.0
+    },
+    {
+      "file": "runs/20260707-161917-smoke-mm3/frames/frame_000002.jpg",
+      "t": 2.0
+    },
+    {
+      "file": "runs/20260707-161917-smoke-mm3/frames/frame_000003.jpg",
+      "t": 4.0
+    }
+  ]
+}

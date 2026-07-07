@@ -1,0 +1,24 @@
+# Virtual env (recreated by scripts/setup_models.sh)
+.venv/
+__pycache__/
+*.pyc
+
+# Large run intermediates we never want in git
+runs/*/frames/
+runs/*/audio_16k.wav
+runs/*/audio_16k.*
+
+# Local video sources (keep only references in manifest.json)
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.m4a
+*.wav
+!**/sample*.mp4
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
