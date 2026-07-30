@@ -1,6 +1,6 @@
 # 🎬 video2knowledge
 
-> 把视频变成**带时间戳的字幕 → 结构化知识文档 → HTML / Anki 卡片**。两条本地推理路径，**全程在本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
+> 把视频变成**带时间戳的字幕 → 结构化知识文档 → HTML / Anki 卡片**。三条本地推理路径，**全程在本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install-from-scratch)
@@ -15,19 +15,20 @@
 | 产物 | 文件 | 说明 |
 |---|---|---|
 | 📝 **带时间戳字幕** | `subtitles.srt` / `.vtt` / `.json` | 词级时间戳，可直接喂播放器或下游处理 |
-| 📄 **知识文档** | `knowledge.md` | 摘要 / 时间轴 / 核心知识点 / Q&A / 术语表，**支持自定义模板** |
+| 📄 **知识文档** | `knowledge.md` | 摘要 / 时间轴 / 核心知识点 / Q&A / 术语表 / **画面要点**，**支持自定义模板** |
 | 🌐 **HTML** | `knowledge.html` | 自包含单文件，`[mm:ss]` 时间戳可点跳 |
 | 🃏 **知识卡片 CSV** | `cards.csv` | question / answer / tags / timestamp / source |
 | 📚 **Anki 牌组** | `cards.apkg` | 稳定 ID，重复导入不重复，开箱即用 |
 
 <a id="paths"></a>
 
-**两条路径**任选或并用：
+**三条路径**任选或并用：
 
 - **路径 1 · 多模态**：原生多模态小模型（≤4B VLM，经 Ollama）逐帧读视频 → 带时间戳字幕。适合**无音轨 / 纯画面 / 屏幕录制 / 演示文稿**，能抓 ASR 看不见的屏幕文字和图表。
 - **路径 2 · ASR**：faster-whisper 转写音轨 → 带时间戳字幕。适合**有清晰语音的视频**（讲座/访谈/教程），更快更准。
+- **路径 3 · 音画融合**：ASR 抓讲解 + VLM OCR 抓屏幕（表格/公式/举例），按时间戳融合。适合**有语音讲解的 PPT/幻灯片视频**——把 ASR 听不到的画面内容补回来。
 
-两条路径产出的字幕 schema 一致，第二步（知识加工）对路径无感。
+路径 1、2 产出的字幕 schema 一致，第二步（知识加工）对路径无感；路径 3 产出融合的 `merged.json`，由第二步的 `--merged` 消费。
 
 ---
 
@@ -174,6 +175,37 @@ python3 scripts/mm_caption.py \
   --video screen_recording.mp4 --out-dir runs/demo2 --interval 2.0
 # 再走同样的第二步（build_knowledge.py），输出与路径 2 完全一致
 ```
+
+对 PPT/幻灯片视频，用 `--mode dedup`（通用感知去重，无需调场景阈值）+ `--prompt-ocr`（表格/公式全量转写）：
+
+```bash
+python3 scripts/mm_caption.py \
+  --video slides.mp4 --out-dir runs/demo2 --mode dedup --prompt-ocr
+```
+
+### 4. 路径 3 · 音画融合（有讲解的 PPT/幻灯片视频）
+
+最适合线上课程、培训录屏这类「**嘴在讲、屏上有表**」的视频。ASR 抓讲解，VLM 抓屏幕上的表格/公式/举例，按时间戳融合：
+
+```bash
+source .venv/bin/activate
+RUN=runs/$(date +%Y%m%d-%HMMSS)-slides; mkdir -p "$RUN"
+
+# 1a. ASR 抓讲解
+python3 scripts/asr_caption.py --video slides.mp4 --out-dir "$RUN" --language zh
+# 1b/1c. 感知去重抽帧 + VLM OCR 抓屏幕
+python3 scripts/mm_caption.py --video slides.mp4 --out-dir "$RUN" --mode dedup --prompt-ocr
+# 2. 按时间戳融合
+python3 scripts/merge_visual.py \
+  --subtitles "$RUN/subtitles.json" --visual "$RUN/captions.json" --out "$RUN/merged.json"
+# 3. 生成知识文档（带"画面要点"小节）
+python3 scripts/build_knowledge.py \
+  --subtitles "$RUN/subtitles.json" --merged "$RUN/merged.json" \
+  --out-dir "$RUN" --format all
+python3 scripts/gen_apkg.py --csv "$RUN/cards.csv" --out "$RUN/cards.apkg" --deck "幻灯片知识卡"
+```
+
+默认文本模型为 **qwen2.5:3b**（8GB 机器实测能读懂融合内容、可推理字幕隐含逻辑）；低配/求快可 `--model openbmb/minicpm5:Q4_K_M`。详见 `references/path3-fusion.md`。
 
 ---
 

@@ -67,6 +67,93 @@ def fmt_mmss(sec: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
+def load_merged(path: Path) -> dict:
+    """Load merged.json from merge_visual.py: {segments:[{start,end,text,visual}], ...}."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def build_interleaved_text(segs: list[dict]) -> str:
+    """Build a raw_text where each ASR line is annotated with its on-screen visual
+    content (tables/formulas/examples). This is what the LLM sees in merged mode so
+    it can ground the narration in the slides. Only the FIRST occurrence of each
+    visual block is inlined (subsequent lines get a short marker) to avoid repeating
+    a full table on every line."""
+    seen_visual: set[int] = set()
+    lines = []
+    for i, s in enumerate(segs):
+        ts = fmt_mmss(s["start"])
+        audio = s["text"].strip()
+        vis = (s.get("visual") or "").strip()
+        if vis:
+            # mark by content identity to avoid repeating identical visual text
+            vid = hash(vis)
+            if vid in seen_visual:
+                lines.append(f"[{ts}] 🎙️{audio}  | 🖼️(画面同上)")
+            else:
+                seen_visual.add(vid)
+                lines.append(f"[{ts}] 🎙️{audio}\n🖼️画面:\n{vis}")
+        else:
+            lines.append(f"[{ts}] 🎙️{audio}")
+    return "\n".join(lines)
+
+
+def _dedup_visual_blocks(blocks: list[dict]) -> list[dict]:
+    """Drop near-duplicate visual blocks (same slide shown again). Compares a
+    normalized fingerprint of each block's text to its predecessor; keeps only
+    blocks whose fingerprint differs. Removes prompt-pollution prefixes too."""
+    def norm(t: str) -> str:
+        # strip common OCR prompt-echo prefixes the VLM sometimes leaks, then
+        # collapse whitespace for a stable fingerprint.
+        for pre in ("以下是", "这是一张", "请逐字", "下面是", "Here is",
+                    "This is", "The following"):
+            if t.lstrip().startswith(pre):
+                t = t.lstrip()[len(pre):]
+        import re as _re
+        return _re.sub(r"\s+", "", t)
+    out = []
+    last_fp = ""
+    for b in blocks:
+        fp = norm(b.get("text", ""))
+        if fp and fp != last_fp:
+            out.append(b)
+            last_fp = fp
+    return out
+
+
+def build_visual_timeline(blocks: list[dict], host: str, model: str | None,
+                          lang: str = "zh") -> str:
+    """Produce a concise timestamped list of on-screen key content from the merged
+    visual blocks. Asks the LLM to condense each DISTINCT slide's OCR into one line;
+    if no model is reachable, emits the raw blocks (truncated per block)."""
+    if not blocks:
+        return ""
+    blocks = _dedup_visual_blocks(blocks)
+    label = "画面内容" if lang == "zh" else "on-screen content"
+    task = ("任务：下面是视频画面不同时刻的逐字转写（含表格/公式/数字）。请把每一帧"
+            "浓缩成一行，格式 `- [mm:ss] <该画面最核心的内容，≤30字，必须保留关键数字与五行/数字组合>`。"
+            "时间戳必须用该帧给定的原始 [mm:ss]，不要自己编。去掉重复，只输出列表，不要前缀。"
+            ) if lang == "zh" else (
+        "Task: below are verbatim per-frame transcriptions of on-screen content at "
+        "different timestamps (tables/formulas/numbers). Condense each into one line "
+        "`- [mm:ss] <core content, <=25 words, MUST keep key numbers/combinations>`. "
+        "Use the original [mm:ss] given for each frame; do not invent timestamps. "
+        "Output list only.")
+    raw = "\n".join(f"[{fmt_mmss(b['start'])}] {b['text']}" for b in blocks)
+    if model and ping(host):
+        resp = ask_llm(host, model, task + f"\n\n{label}:\n" + raw[:12000])
+        if resp and len(resp.strip()) > 3:
+            cleaned = re.sub(r"^```[a-zA-Z]*\s*\n?", "", resp.strip())
+            cleaned = re.sub(r"\n?```\s*$", "", cleaned).strip()
+            return cleaned
+    # fallback: raw blocks, one line each, truncated
+    out = []
+    for b in blocks:
+        t = fmt_mmss(b["start"])
+        one = b["text"].replace("\n", " ").strip()[:40]
+        out.append(f"- [{t}] {one}")
+    return "\n".join(out)
+
+
 # --- Ollama summarization ----------------------------------------------------
 
 def http_json(url: str, payload: dict, timeout: int = 180) -> dict:
@@ -129,8 +216,43 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
+def _chunk_lines(raw_text: str, max_chars: int) -> list[str]:
+    """Split raw_text (newline-separated `[ts] ...` lines) into chunks, each under
+    max_chars, never breaking a line. Returns whole-line chunks."""
+    lines = raw_text.splitlines()
+    chunks, cur, cur_len = [], [], 0
+    for ln in lines:
+        n = len(ln) + 1
+        if cur and cur_len + n > max_chars:
+            chunks.append("\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(ln)
+        cur_len += n
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks or [raw_text[:max_chars]]
+
+
+def _strip_fence(resp: str) -> str:
+    cleaned = re.sub(r"^```[a-zA-Z]*\s*\n?", "", resp.strip())
+    return re.sub(r"\n?```\s*$", "", cleaned).strip()
+
+
+def _merge_list_items(items: list[str], max_n: int) -> str:
+    """Dedup list items (by normalized text) and cap to max_n lines."""
+    seen, out = set(), []
+    for it in items:
+        key = re.sub(r"\s+", "", it).strip("- ")
+        if key and key not in seen:
+            seen.add(key)
+            out.append(it)
+            if len(out) >= max_n:
+                break
+    return "\n".join(out)
+
+
 def build_analysis(host: str, model: str | None, raw_text: str, source: str,
-                   lang: str = "zh") -> dict:
+                   lang: str = "zh", char_limit: int = 8000) -> dict:
     """Ask the LLM for summary / timeline / key points / QA / glossary.
 
     Strategy: call the model once PER field with a narrow, plain-markdown prompt.
@@ -141,6 +263,10 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     `lang` selects the prompt language ("zh" or "en") — match it to the video's
     language so a Chinese-centric 1B model does not hallucinate cross-language
     content when summarizing foreign-language subtitles.
+
+    `char_limit` truncates the raw_text prefix fed to the model. The default 8000
+    fits a small model's context comfortably. In merged mode (audio+visual), the
+    caller passes a larger limit since the interleaved text is the primary signal.
     """
     fields = {
         "summary": "", "timeline": "", "key_points": "",
@@ -149,7 +275,7 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     if not (model and ping(host)):
         return _heuristic_fallback(raw_text, fields)
 
-    sub = raw_text[:8000]
+    sub = raw_text[:char_limit]
     # Bilingual prompt sets. Match `lang` to the video's language to stop a
     # Chinese-centric small model from hallucinating cross-language content.
     TASKS = {
@@ -189,10 +315,11 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
             ("glossary",
              "任务：从下面这段视频字幕中，提取最重要的术语/专有名词。\n"
              "要求：\n"
-             "- 每行格式 `- 术语(1-3个字/词)`\n"
-             "- 只保留名词性术语，不要整句\n"
+             "- 每行格式 `- 术语`，术语必须是字幕中真实出现的名词\n"
+             "- 只保留名词性术语，不要整句、不要动词短语\n"
+             "- 禁止输出字幕里没有的内容，禁止照抄示例\n"
              "- 只输出列表\n"
-             "- 示例：`- 重力`"),
+             "- 示例格式（仅示意格式，不要输出此内容）：`- 光合作用`"),
         ],
         "en": [
             ("summary",
@@ -233,22 +360,55 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
             ("glossary",
              "Task: Extract the most important terms / proper nouns from the subtitles below.\n"
              "Rules:\n"
-             "- Each line formatted as `- term`\n"
-             "- Keep only noun-like terms (1-3 words), not full sentences\n"
+             "- Each line formatted as `- term`; the term must be a real noun appearing in the subtitles\n"
+             "- Keep only noun-like terms (1-3 words), not full sentences or verb phrases\n"
+             "- Do NOT output anything not present in the subtitles; do NOT copy the example\n"
              "- Output only the list\n"
-             "- Example: `- gravity`"),
+             "- Example format (illustrating format only — do not output it): `- photosynthesis`"),
         ],
     }
     tasks = TASKS.get(lang, TASKS["en"])
     sublabel = "字幕" if lang == "zh" else "subtitles"
+    # Map-reduce for long context: list-type fields (timeline/key_points/qa/glossary)
+    # are extracted per chunk then merged+deduped. This keeps each LLM call on a small,
+    # accurate context (small/mid models degrade badly on 18k+ char inputs — repeated
+    # output, dropped items, bad timestamps). summary is map(summarize)->reduce(summarize).
+    CHUNK = 4500
+    long_mode = len(sub) > CHUNK * 1.5
+    chunks = _chunk_lines(sub, CHUNK) if long_mode else [sub]
+    LIST_FIELDS = {"timeline", "key_points", "qa", "glossary"}
+    CAPS = {"timeline": 12, "key_points": 12, "qa": 30, "glossary": 16}
     for key, instruction in tasks:
-        resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + sub)
-        if resp and len(resp.strip()) > 3:
-            # Models sometimes wrap markdown in ``` fences — strip them for clean MD.
-            cleaned = re.sub(r"^```[a-zA-Z]*\s*\n?", "", resp.strip())
-            cleaned = re.sub(r"\n?```\s*$", "", cleaned).strip()
-            fields[key] = cleaned
-        else:
+        try:
+            if long_mode and key in LIST_FIELDS:
+                collected = []
+                for ch in chunks:
+                    resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + ch)
+                    if resp and len(resp.strip()) > 3:
+                        collected.extend(l for l in _strip_fence(resp).splitlines() if l.strip())
+                merged = _merge_list_items(collected, CAPS[key])
+                fields[key] = merged if merged else _heuristic_fallback(raw_text, {key: ""})[key]
+            elif long_mode and key == "summary":
+                # summarize each chunk, then summarize the concatenation
+                parts = []
+                for ch in chunks:
+                    resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + ch)
+                    if resp and len(resp.strip()) > 3:
+                        parts.append(_strip_fence(resp))
+                joined = "\n".join(parts)
+                reduce_instr = ("任务：下面是一段视频各部分的摘要，请融合成一段3-5句话的总体总结，"
+                                "保留关键信息，去掉重复，只输出总结正文。") if lang == "zh" else (
+                    "Task: the items below are summaries of parts of a video. Fuse them "
+                    "into one 3-5 sentence overall summary, keeping key info, dropping "
+                    "duplicates. Output only the summary.")
+                resp = ask_llm(host, model, reduce_instr + f"\n\n{sublabel}:\n" + joined[:6000])
+                fields[key] = _strip_fence(resp) if resp and resp.strip() else (
+                    joined[:500] or _heuristic_fallback(raw_text, {key: ""})[key])
+            else:
+                resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + sub)
+                fields[key] = _strip_fence(resp) if resp and len(resp.strip()) > 3 else (
+                    _heuristic_fallback(raw_text, {key: ""})[key])
+        except Exception:
             fields[key] = _heuristic_fallback(raw_text, {key: ""})[key]
     return fields
 
@@ -364,16 +524,26 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Step 2: subtitles -> knowledge artifacts")
     ap.add_argument("--subtitles", required=True, type=Path,
                     help="subtitles.json or subtitles.srt from Step 1")
+    ap.add_argument("--merged", type=Path, default=None,
+                    help="merged.json from merge_visual.py (dual-path fusion). When set, "
+                         "the LLM is fed audio+visual interleaved text and a visual "
+                         "timeline section is added; --subtitles is still required for "
+                         "titles/source but the merged file takes precedence for content.")
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE,
                     help="knowledge-doc template (default assets/default-template.md)")
     ap.add_argument("--format", choices=["knowledge", "html", "csv", "all"], default="all")
-    ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm5:Q4_K_M"),
-                    help="Ollama text model for summarization/QA")
+    ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "qwen2.5:3b"),
+                    help="Ollama text model for summarization/QA (default qwen2.5:3b; "
+                         "set V2K_TEXT_MODEL or pass --model openbmb/minicpm5:Q4_K_M "
+                         "for faster/low-RAM runs)")
     ap.add_argument("--title", default=None, help="document title (default: video basename)")
     ap.add_argument("--lang", choices=["zh", "en"], default="zh",
                     help="prompt/output language for summary/QA (default zh; set to en "
                          "for English videos to avoid cross-language hallucination)")
+    ap.add_argument("--char-limit", type=int, default=None,
+                    help="max chars of raw text fed to the model (default 8000; auto-raised "
+                         "in merged mode since interleaved audio+visual is the main signal)")
     ap.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     args = ap.parse_args()
 
@@ -385,15 +555,40 @@ def main() -> int:
         return 2
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    segs, source = load_subtitles(args.subtitles)
-    raw_text = "\n".join(f"[{fmt_mmss(s['start'])}] {s['text']}" for s in segs)
+
+    merged_data = None
+    visual_timeline = ""
+    if args.merged:
+        if not args.merged.is_file():
+            print(f"[err] merged not found: {args.merged}", file=sys.stderr)
+            return 2
+        merged_data = load_merged(args.merged)
+        mseg = merged_data["segments"]
+        raw_text = build_interleaved_text(mseg)
+        # merged text interleaves tables/formulas — raise the cap so they survive.
+        char_limit = args.char_limit or 20000
+        print(f"[v2k] merged mode: {len(mseg)} ASR segments, "
+              f"{merged_data.get('used_visual', 0)}/{merged_data.get('visual_count', 0)} "
+              f"visual frames; interleaved raw_text {len(raw_text)} chars, "
+              f"cap {char_limit}; summarizing with {args.model}...", file=sys.stderr)
+        visual_timeline = build_visual_timeline(
+            merged_data.get("visual_blocks", []), args.host, args.model, lang=args.lang)
+        # source name reflects fusion
+        segs = mseg
+        source = f"{args.merged.name} ({merged_data.get('asr_count','?')} ASR + {merged_data.get('visual_count','?')} visual)"
+    else:
+        segs, source = load_subtitles(args.subtitles)
+        raw_text = "\n".join(f"[{fmt_mmss(s['start'])}] {s['text']}" for s in segs)
+        char_limit = args.char_limit or 8000
 
     title = args.title or args.subtitles.stem.replace("_", " ")
     duration = segs[-1]["end"] if segs else 0.0
-    print(f"[v2k] {len(segs)} segments, {duration:.0f}s; summarizing with {args.model}...",
-          file=sys.stderr)
+    if not args.merged:
+        print(f"[v2k] {len(segs)} segments, {duration:.0f}s; summarizing with {args.model}...",
+              file=sys.stderr)
 
-    analysis = build_analysis(args.host, args.model, raw_text, source, lang=args.lang)
+    analysis = build_analysis(args.host, args.model, raw_text, source,
+                              lang=args.lang, char_limit=char_limit)
 
     def as_md(v) -> str:
         """Coerce any analysis value into a markdown string for template/HTML."""
@@ -416,7 +611,9 @@ def main() -> int:
         "key_points": as_md(analysis["key_points"]),
         "qa": as_md(analysis["qa"]),
         "glossary": as_md(analysis["glossary"]),
-        "meta": f"segments={len(segs)} model={args.model}",
+        "visual_timeline": visual_timeline or "(无视觉信息，使用纯ASR模式)",
+        "meta": f"segments={len(segs)} model={args.model}"
+               + (" +merged" if args.merged else ""),
     }
 
     want = {"knowledge", "html", "csv"} if args.format == "all" else {args.format}

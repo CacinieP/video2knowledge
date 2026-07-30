@@ -37,8 +37,22 @@ PROMPT = (
     "no preamble, no thinking tags, no English."
 )
 
+# OCR prompt: full-fidelity transcription of on-screen text/tables/formulas.
+# Used when the video is a slide/PPT/screencast and ASR cannot capture the visual
+# content (tables, charts, formulas, examples). Keeps Markdown table formatting and
+# newlines (the default caption prompt collapses them and caps at 40 chars).
+#
+# Anti-pollution: the prompt deliberately avoids listing "title/body/list/table..."
+# as a menu, because small VLMs echo that menu back as content. Instead it states
+# the single goal (verbatim transcription) and the few format rules.
+PROMPT_OCR = (
+    "请逐字转写这张图片画面里所有可见的文字、数字和表格，原样输出，不要做任何总结、"
+    "解释或补充。表格用 Markdown 格式（| 列 | 列 |）保留行列结构，其余按原文换行。"
+    "只输出转写内容本身，不要复述本指令。"
+)
 
-def http_json(url: str, payload: dict, timeout: int = 120) -> dict:
+
+def http_json(url: str, payload: dict, timeout: int = 180) -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"},
@@ -58,33 +72,45 @@ def ping(host: str) -> None:
         sys.exit(2)
 
 
-def caption_frame(host: str, model: str, jpg: Path) -> str:
+def caption_frame(host: str, model: str, jpg: Path, prompt: str, ocr: bool) -> str:
     b64 = base64.b64encode(jpg.read_bytes()).decode()
     # think:false disables the reasoning chain on thinking models (MiniCPM, Qwen3, ...)
     # so .response holds only the final answer.
+    # num_predict is raised for OCR so full tables/formulas are not truncated; the
+    # default caption mode keeps 160 (short captions).
+    num_predict = 1024 if ocr else 160
     resp = http_json(
         f"{host}/api/generate",
-        {"model": model, "prompt": PROMPT, "images": [b64],
+        {"model": model, "prompt": prompt, "images": [b64],
          "stream": False, "think": False,
-         "options": {"temperature": 0.2, "num_predict": 160}},
+         "options": {"temperature": 0.2, "num_predict": num_predict}},
     )
-    text = resp.get("response", "").strip().replace("\n", " ")
+    text = resp.get("response", "").strip()
     # Fallback cleanup in case the model still leaks a reasoning chain.
     if "</think>" in text:
         text = text.rsplit("</think>", 1)[1].strip()
+    # Caption mode collapses newlines (one-line subtitles); OCR mode preserves
+    # newlines so Markdown tables survive.
+    if not ocr:
+        text = text.replace("\n", " ")
     return text
 
 
-def frames_from(video: Path, out_dir: Path, interval: float) -> Path:
+def frames_from(video: Path, out_dir: Path, interval: float, mode: str,
+                dedup_fps: float, dedup_hamming: int, max_frames: int) -> Path:
     """Delegate frame extraction to extract_frames.py (same dir)."""
     here = Path(__file__).resolve().parent
     import subprocess
-    subprocess.run(
-        [sys.executable, str(here / "extract_frames.py"),
-         "--video", str(video), "--out-dir", str(out_dir / "frames"),
-         "--interval", str(interval)],
-        check=True,
-    )
+    cmd = [sys.executable, str(here / "extract_frames.py"),
+           "--video", str(video), "--out-dir", str(out_dir / "frames"),
+           "--mode", mode]
+    if mode == "interval":
+        cmd += ["--interval", str(interval)]
+    else:  # dedup
+        cmd += ["--dedup-fps", str(dedup_fps),
+                "--dedup-hamming", str(dedup_hamming),
+                "--max-frames", str(max_frames)]
+    subprocess.run(cmd, check=True)
     return out_dir / "frames" / "frames.json"
 
 
@@ -109,7 +135,20 @@ def main() -> int:
     ap.add_argument("--video", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--model", default="openbmb/minicpm-v4.6:latest")
+    ap.add_argument("--mode", choices=["interval", "dedup"], default="interval",
+                    help="frame sampling mode (default interval; use dedup for "
+                         "slide/PPT/screencast videos)")
     ap.add_argument("--interval", type=float, default=2.0)
+    ap.add_argument("--dedup-fps", type=float, default=1.0,
+                    help="dense sample rate in dedup mode (default 1.0)")
+    ap.add_argument("--dedup-hamming", type=int, default=10,
+                    help="dHash change threshold in dedup mode (default 10)")
+    ap.add_argument("--max-frames", type=int, default=120,
+                    help="frame cap in dedup mode (default 120)")
+    ap.add_argument("--prompt-ocr", action="store_true",
+                    help="use the table/formula OCR prompt instead of the short "
+                         "caption prompt (for slide/PPT videos where ASR misses "
+                         "on-screen text/tables/examples)")
     ap.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     args = ap.parse_args()
 
@@ -120,18 +159,23 @@ def main() -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     ping(args.host)
 
-    manifest = frames_from(args.video, args.out_dir, args.interval)
+    manifest = frames_from(args.video, args.out_dir, args.interval, args.mode,
+                           args.dedup_fps, args.dedup_hamming, args.max_frames)
     frames = json.loads(manifest.read_text())["frames"]
-    print(f"[mm] {len(frames)} frames to caption with {args.model}", file=sys.stderr)
+    prompt = PROMPT_OCR if args.prompt_ocr else PROMPT
+    print(f"[mm] {len(frames)} frames to caption with {args.model}"
+          f" ({'OCR' if args.prompt_ocr else 'caption'} prompt)", file=sys.stderr)
 
     captions = []
     for i, fr in enumerate(frames):
         t0 = time.time()
-        text = caption_frame(args.host, args.model, Path(fr["file"]))
+        text = caption_frame(args.host, args.model, Path(fr["file"]), prompt, args.prompt_ocr)
         elapsed = time.time() - t0
         next_t = frames[i + 1]["t"] if i + 1 < len(frames) else fr["t"] + args.interval
         captions.append({"start": fr["t"], "end": next_t, "text": text})
-        print(f"[mm] {i+1}/{len(frames)} @ {fr['t']:.1f}s ({elapsed:.1f}s): {text}", file=sys.stderr)
+        preview = text.replace("\n", " ")[:60]
+        print(f"[mm] {i+1}/{len(frames)} @ {fr['t']:.1f}s ({elapsed:.1f}s): {preview}",
+              file=sys.stderr)
 
     (args.out_dir / "captions.srt").write_text(to_srt(captions), encoding="utf-8")
     (args.out_dir / "captions.json").write_text(

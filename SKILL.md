@@ -57,12 +57,13 @@ Decision tree:
   Faster, more accurate text, fine-grained timestamps. → `references/path2-asr.md`
 - **Silent / slide-only / screen recording**, or you need on-screen text & diagrams
   → **Path 1 (multimodal)**. → `references/path1-multimodal.md`
-- **Both** (cross-validate high-value content): run Path 2 for text, Path 1 for
-  visual context, feed ASR subtitles to Step 2 and fold visual captions in by hand
-  or via a custom template.
+- **Slide/PPT video with a speech track** (the common online-course case): the core
+  content is on screen (tables, formulas, examples) AND the speaker narrates →
+  **Path 3 (dual-path fusion)**. Runs ASR for narration + VLM OCR for slides and
+  fuses them by timestamp. → `references/path3-fusion.md`
 
-Both paths emit the same segment schema (`{start,end,text}`), so Step 2 is
-path-agnostic.
+Paths 1 & 2 emit the same segment schema (`{start,end,text}`), so Step 2 is
+path-agnostic. Path 3 emits a fused `merged.json` consumed by Step 2's `--merged`.
 
 ### Path 1 — Multimodal captions
 
@@ -73,6 +74,15 @@ python3 scripts/mm_caption.py \
 ```
 Outputs: `OUT/captions.srt`, `OUT/captions.json`, `OUT/frames/`.
 
+For slide/PPT videos, use dedup sampling (general-purpose, no threshold tuning)
+plus the table/formula OCR prompt:
+
+```bash
+python3 scripts/mm_caption.py \
+  --video VIDEO --out-dir OUT \
+  --mode dedup --prompt-ocr
+```
+
 ### Path 2 — ASR transcription
 
 ```bash
@@ -81,6 +91,23 @@ python3 scripts/asr_caption.py \
   --model small --language zh
 ```
 Outputs: `OUT/subtitles.{srt,vtt,json}`.
+
+### Path 3 — Dual-path fusion (ASR × VLM)
+
+Run Path 2 then Path 1 (OCR), fuse, and build from the merged file:
+
+```bash
+# 1a. ASR
+python3 scripts/asr_caption.py --video VIDEO --out-dir OUT --language zh
+# 1b/1c. dedup frames + VLM OCR
+python3 scripts/mm_caption.py --video VIDEO --out-dir OUT --mode dedup --prompt-ocr
+# 2. fuse by timestamp
+python3 scripts/merge_visual.py --subtitles OUT/subtitles.json --visual OUT/captions.json --out OUT/merged.json
+# 3. build (Step 2 with --merged)
+python3 scripts/build_knowledge.py --subtitles OUT/subtitles.json --merged OUT/merged.json --out-dir OUT --format all
+```
+The default text model is `qwen2.5:3b` (reads fused content well; override with
+`--model openbmb/minicpm5:Q4_K_M` for low-RAM/fast runs).
 
 ## Refine into Knowledge Artifacts (Step 2)
 
@@ -178,10 +205,11 @@ EOF
 |---|---|
 | `scripts/setup_models.sh` | Idempotent model/venv setup (profile-aware) |
 | `scripts/hardware_profile.py` | Detect machine → recommend ASR/VLM/backend profile |
-| `scripts/extract_frames.py` | ffmpeg frame sampling → `frames.json` |
-| `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}` |
+| `scripts/extract_frames.py` | Frame sampling: `--mode interval` (uniform fps) or `--mode dedup` (dense sample + dHash perceptual dedup, general-purpose for slides) → `frames.json` |
+| `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}`; `--mode dedup --prompt-ocr` for slide tables/formulas |
 | `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}` |
-| `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv |
+| `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` |
+| `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv; `--merged` for dual-path fusion with `{{visual_timeline}}` section + map-reduce |
 | `scripts/gen_apkg.py` | Step 2.3: cards.csv → Anki `.apkg` |
 
 ## References (load as needed)
@@ -189,5 +217,6 @@ EOF
 - `references/hardware-profiles.md` — profile table, sizing rationale, tuning
 - `references/path1-multimodal.md` — VLM details, API format, sampling strategy
 - `references/path2-asr.md` — model sizing, device/compute, language options
+- `references/path3-fusion.md` — dual-path fusion (ASR × VLM OCR), dedup sampling, `--merged` build
 - `references/templates.md` — placeholder spec + custom template examples
 - `references/outputs.md` — HTML/CSV/APKG schemas, single-format runs, degraded mode

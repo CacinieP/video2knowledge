@@ -8,6 +8,9 @@
 ## 时间轴
 {{timeline}}
 
+## 画面要点（表格/公式/定义）
+{{visual_timeline}}
+
 ## 核心知识点
 {{key_points}}
 
