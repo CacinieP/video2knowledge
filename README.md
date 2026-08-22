@@ -151,7 +151,7 @@ python3 scripts/gen_apkg.py \
   --csv runs/demo/cards.csv --out runs/demo/cards.apkg --deck "我的知识卡"
 ```
 
-完成后 `runs/demo/` 里就有 `subtitles.srt`、`knowledge.md`、`knowledge.html`、`cards.csv`、`cards.apkg`。
+完成后 `runs/demo/` 里就有 `subtitles.srt`、`knowledge.md`、`knowledge.html`、`cards.csv`、`cards.apkg`，装了 python-docx/fpdf2 时 `--format all` 还会自动产出 `knowledge.docx` 和 `knowledge.pdf`。
 
 > 英文视频记得在第二步加 `--lang en`（默认 `zh`），否则小模型在语言不匹配时容易把示例内容串进产出。
 
@@ -209,7 +209,7 @@ python3 scripts/build_notes.py \
   --out-dir runs/demo --max-frames 12 --describe-frames
 ```
 
-每个节点：LLM 小标题 → 帧插图 → VLM 画面描述（`--describe-frames`）→ 旁白浓缩要点 → 原声节选。产出 `notes.md`（相对路径插图）和 `notes.html`（base64 自包含单文件，可直接发给别人）。
+每个节点：LLM 小标题 → 帧插图 → VLM 画面描述（`--describe-frames`）→ 旁白浓缩要点 → 原声节选。产出 `notes.md`（相对路径插图）和 `notes.html`（base64 自包含单文件，可直接发给别人）。加 `--docx --pdf` 可再导出 `notes.docx` / `notes.pdf`（关键帧嵌入，打印/归档友好；PDF 自动探测系统中文字体，可用 `V2K_PDF_FONT` 指定）。
 
 ---
 
@@ -368,8 +368,9 @@ video2knowledge/
 │   ├── mm_caption.py              # 路径 1：VLM 逐帧 → 字幕（OCR 文本变化门控）
 │   ├── extract_frames.py          # ffmpeg 抽帧（interval/dedup：稳定帧选取+空白门控+dual 哈希+簇式预算）→ frames.json
 │   ├── merge_visual.py            # 路径 3：ASR × VLM 按时间戳融合 → merged.json（含 re-attach 回退）
-│   ├── build_knowledge.py         # 第二步：字幕 → 知识文档/HTML/CSV
-│   ├── build_notes.py             # 2.4：图文笔记（关键帧 × 旁白）→ notes.md/.html
+│   ├── build_knowledge.py         # 第二步：字幕 → 知识文档/HTML/CSV（--format docx/pdf 可导 office）
+│   ├── build_notes.py             # 2.4：图文笔记（关键帧 × 旁白）→ notes.md/.html（--docx/--pdf）
+│   ├── md_export.py               # Markdown → DOCX/PDF 导出器（python-docx + fpdf2，CJK 字体自检）
 │   └── gen_apkg.py                # 2.3：CSV → Anki .apkg
 ├── references/                    # 详细文档（按需加载）
 │   ├── hardware-profiles.md

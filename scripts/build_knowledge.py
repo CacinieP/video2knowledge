@@ -532,7 +532,11 @@ def main() -> int:
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE,
                     help="knowledge-doc template (default assets/default-template.md)")
-    ap.add_argument("--format", choices=["knowledge", "html", "csv", "all"], default="all")
+    ap.add_argument("--format", choices=["knowledge", "html", "csv", "docx", "pdf", "all"],
+                    default="all",
+                    help="all = knowledge+html+csv (plus docx+pdf when python-docx/"
+                         "fpdf2 are installed; explicit docx/pdf fail loudly "
+                         "when the lib is missing)")
     ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "qwen3.5:4b"),
                     help="Ollama text model for summarization/QA (default qwen3.5:4b, "
                          "unified vision+text so it can share the Path-1 VLM pull; "
@@ -618,8 +622,21 @@ def main() -> int:
     }
 
     want = {"knowledge", "html", "csv"} if args.format == "all" else {args.format}
+    if args.format == "all":  # office/print exports are opt-out by absence of lib
+        try:
+            import docx  # noqa: F401
+            want.add("docx")
+        except ImportError:
+            print("[warn] python-docx missing — skipping knowledge.docx "
+                  "(pip install python-docx)", file=sys.stderr)
+        try:
+            import fpdf  # noqa: F401
+            want.add("pdf")
+        except ImportError:
+            print("[warn] fpdf2 missing — skipping knowledge.pdf "
+                  "(pip install fpdf2)", file=sys.stderr)
 
-    if "knowledge" in want or "html" in want:
+    if "knowledge" in want or "html" in want or "docx" in want or "pdf" in want:
         md = render_template(args.template, ctx)
         md_path = args.out_dir / "knowledge.md"
         md_path.write_text(md, encoding="utf-8")
@@ -633,6 +650,17 @@ def main() -> int:
         html_path = args.out_dir / "knowledge.html"
         html_path.write_text(h, encoding="utf-8")
         print(f"[ok] html -> {html_path}")
+
+    if "docx" in want:
+        from md_export import md_to_docx
+        p = md_to_docx(md, args.out_dir / "knowledge.docx", base_dir=args.out_dir)
+        print(f"[ok] docx -> {p}")
+
+    if "pdf" in want:
+        from md_export import md_to_pdf
+        p = md_to_pdf(md, args.out_dir / "knowledge.pdf",
+                      base_dir=args.out_dir, title=title)
+        print(f"[ok] pdf -> {p}")
 
     if "csv" in want or "all" in want:
         rows = cards_from_qa(analysis["qa"], source)

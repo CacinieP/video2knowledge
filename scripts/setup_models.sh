@@ -116,7 +116,7 @@ if [[ ! -d "$VENV_DIR" ]]; then
     # may be an MSYS/mingw build whose venvs (bin/ layout, no ctranslate2
     # wheels) cannot host faster-whisper. uv sidesteps that entirely.
     uv venv "$VENV_DIR" >/dev/null
-    uv pip install --python "$(venv_python)" --quiet "faster-whisper>=1.0.3" genanki
+    uv pip install --python "$(venv_python)" --quiet "faster-whisper>=1.0.3" genanki python-docx fpdf2
   else
     PY_BIN="$(command -v python3 || command -v python)"
     case "$(uname -s)" in
@@ -135,7 +135,7 @@ if [[ ! -d "$VENV_DIR" ]]; then
     esac
     "$PY_BIN" -m venv "$VENV_DIR"
     "$(venv_python)" -m pip install --quiet --upgrade pip
-    "$(venv_python)" -m pip install --quiet "faster-whisper>=1.0.3" genanki
+    "$(venv_python)" -m pip install --quiet "faster-whisper>=1.0.3" genanki python-docx fpdf2
   fi
   log "Installed faster-whisper + genanki into venv"
 else
@@ -145,9 +145,20 @@ VENV_PY="$(venv_python)" || { log "ERROR: venv dir exists but no python found in
 "$VENV_PY" -c "import faster_whisper" 2>/dev/null || {
   log "venv missing faster-whisper — installing..."
   if have uv; then
-    uv pip install --python "$VENV_PY" --quiet "faster-whisper>=1.0.3" genanki
+    uv pip install --python "$VENV_PY" --quiet "faster-whisper>=1.0.3" genanki python-docx fpdf2
   else
-    "$VENV_PY" -m pip install --quiet "faster-whisper>=1.0.3" genanki
+    "$VENV_PY" -m pip install --quiet "faster-whisper>=1.0.3" genanki python-docx fpdf2
+  fi
+}
+
+# docx/pdf export libs (optional at runtime; build_knowledge --format docx/pdf,
+# build_notes --docx/--pdf degrade with a hint when absent)
+"$VENV_PY" -c "import docx, fpdf" 2>/dev/null || {
+  log "venv missing python-docx/fpdf2 — installing (docx/pdf export)..."
+  if have uv; then
+    uv pip install --python "$VENV_PY" --quiet python-docx fpdf2
+  else
+    "$VENV_PY" -m pip install --quiet python-docx fpdf2
   fi
 }
 

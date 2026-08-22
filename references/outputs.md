@@ -81,8 +81,34 @@ settled final frame):
 python3 scripts/build_knowledge.py --subtitles s.json --out-dir o --format knowledge  # 2.1 only
 python3 scripts/build_knowledge.py --subtitles s.json --out-dir o --format html       # 2.2 only
 python3 scripts/build_knowledge.py --subtitles s.json --out-dir o --format csv        # 2.3 only
+python3 scripts/build_knowledge.py --subtitles s.json --out-dir o --format docx       # 2.2b office
+python3 scripts/build_knowledge.py --subtitles s.json --out-dir o --format pdf        # 2.2b print
 python3 scripts/gen_apkg.py --csv o/cards.csv --out o/cards.apkg                      # 2.3 final
 ```
+
+## DOCX / PDF export (2.2b, office & print)
+
+`scripts/md_export.py` converts any pipeline `.md` (knowledge.md, notes.md) to
+`.docx` (python-docx) or `.pdf` (fpdf2) — pure-python backends, no LaTeX, no
+Word. Wired in as:
+
+- `build_knowledge.py --format docx` / `--format pdf` (explicit), and **auto**
+  with `--format all` when the libs are installed (missing libs warn + skip,
+  never fail an `all` run; explicit formats fail loudly with an install hint);
+- `build_notes.py --docx` / `--pdf` — illustrated notes with key frames
+  embedded;
+- standalone: `python3 scripts/md_export.py --md run/notes.md --out run/notes.pdf`.
+
+Rendering: headings/bold/italic/code spans, lists, tables (gridded in docx,
+headed in pdf), blockquotes, fenced code, embedded images, horizontal rules.
+Details that matter in practice:
+
+- **PDF CJK font** is auto-detected per OS (msyh/simhei on Windows, PingFang/
+  Songti on macOS, Noto CJK/WenQuanYi on Linux) and embedded; override with
+  `V2K_PDF_FONT=/path/to/font.ttf|ttc`.
+- **ffmpeg 8 JPEGs** carry no JFIF APP0 (and add a COM comment), which
+  python-docx rejects — md_export normalizes both transparently before
+  embedding.
 
 ## Degraded mode
 

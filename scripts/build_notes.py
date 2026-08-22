@@ -227,6 +227,11 @@ def main() -> int:
     ap.add_argument("--max-frames", type=int, default=12,
                     help="key-frame cap for the note (cluster-stratified: every "
                          "change burst keeps its settled frame; default 12)")
+    ap.add_argument("--docx", action="store_true",
+                    help="also export notes.docx (needs python-docx)")
+    ap.add_argument("--pdf", action="store_true",
+                    help="also export notes.pdf (needs fpdf2; CJK font auto-detected,"
+                         " override with V2K_PDF_FONT)")
     ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "qwen3.5:4b"),
                     help="Ollama text model for section titles/notes "
                          "(default qwen3.5:4b; unset behavior degrades gracefully)")
@@ -291,6 +296,19 @@ def main() -> int:
     html_path = args.out_dir / "notes.html"
     html_path.write_text(render_html(sections, meta), encoding="utf-8")
     print(f"[ok] illustrated note (self-contained html) -> {html_path}")
+
+    if args.docx or args.pdf:  # optional office/print exports, degrade gracefully
+        try:
+            from md_export import md_to_docx, md_to_pdf
+            if args.docx:
+                p = md_to_docx(md, args.out_dir / "notes.docx", base_dir=args.out_dir)
+                print(f"[ok] illustrated note (docx) -> {p}")
+            if args.pdf:
+                p = md_to_pdf(md, args.out_dir / "notes.pdf",
+                              base_dir=args.out_dir, title=str(meta["title"]))
+                print(f"[ok] illustrated note (pdf) -> {p}")
+        except RuntimeError as e:
+            print(f"[warn] export skipped: {e}", file=sys.stderr)
     return 0
 
 

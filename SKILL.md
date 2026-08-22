@@ -127,8 +127,10 @@ Produces, in `OUT/`:
 |---|---|---|
 | 2.1 Knowledge doc (templated) | `knowledge.md` | uses `assets/default-template.md` or `--template <file>` |
 | 2.2 Self-contained HTML | `knowledge.html` | clickable `[mm:ss]` timeline |
+| 2.2b Office/print export | `knowledge.docx` / `knowledge.pdf` | `--format docx` / `--format pdf` (auto in `--format all` when python-docx/fpdf2 installed) |
 | 2.3 Knowledge cards | `cards.csv` | `question,answer,tags,timestamp,source` |
 | 2.4 Illustrated notes (图文笔记) | `notes.md` + `notes.html` | key frames × narration, see below |
+| 2.4b Notes office/print | `notes.docx` / `notes.pdf` | `build_notes.py --docx --pdf` (frames embedded) |
 
 Then convert cards to Anki (2.3 final):
 
@@ -232,8 +234,9 @@ EOF
 | `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}`; `--mode dedup --prompt-ocr` for slide tables/formulas, with an OCR text-change gate that drops frames whose text is ≥90% similar to the last kept one |
 | `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}`; `--hotwords` biases transcription via initial_prompt |
 | `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` (re-attach fallback keeps long-lived slides attached) |
-| `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv; `--merged` for dual-path fusion with `{{visual_timeline}}` section + map-reduce |
-| `scripts/build_notes.py` | Step 2.4: illustrated notes (图文笔记): key frames × narration → notes.md + self-contained notes.html |
+| `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv; `--merged` for dual-path fusion with `{{visual_timeline}}` section + map-reduce; `--format docx` / `--format pdf` for office/print |
+| `scripts/build_notes.py` | Step 2.4: illustrated notes (图文笔记): key frames × narration → notes.md + self-contained notes.html; `--docx` / `--pdf` for office/print |
+| `scripts/md_export.py` | Shared Markdown → DOCX/PDF exporter (python-docx + fpdf2, CJK font auto-detect, ffmpeg-JPEG normalize); standalone CLI for any pipeline .md |
 | `scripts/gen_apkg.py` | Step 2.3: cards.csv → Anki `.apkg` |
 
 ## References (load as needed)
