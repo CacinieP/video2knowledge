@@ -6,17 +6,47 @@
 # Path 2 (ASR):        faster-whisper installed into a local venv; model weights
 #                      auto-download on first transcription to ~/.cache/huggingface
 #
+# Cross-platform: works in bash on Linux, macOS, and Windows (Git Bash / MSYS).
+# Never activates the venv (bin/ vs Scripts/ layout differs); every python call
+# goes through an absolute interpreter path resolved once below.
+#
 # Safe to re-run: existing artifacts are skipped. Prints clear status for traceability.
 set -euo pipefail
 
-VENV_DIR="${VENV_DIR:-$HOME/.zcode/skills/video2knowledge/.venv}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+# venv lives in the repo/run root next to this script — wherever the skill is
+# installed (e.g. ~/.agents/skills/video2knowledge), not a hardcoded HOME path.
+VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
+
+# --- cross-platform helpers ---------------------------------------------------
+log() { printf '[setup] %s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Windows venvs use Scripts/, POSIX venvs use bin/. Resolve once.
+venv_python() {
+  if [ -x "$VENV_DIR/Scripts/python.exe" ]; then
+    printf '%s\n' "$VENV_DIR/Scripts/python.exe"
+  elif [ -x "$VENV_DIR/bin/python" ]; then
+    printf '%s\n' "$VENV_DIR/bin/python"
+  else
+    return 1
+  fi
+}
+
+# Interpreter used for hardware profiling only (the venv python once it exists).
+profile_python() {
+  if VENV_PY="$(venv_python)"; then printf '%s\n' "$VENV_PY"; return 0; fi
+  if have python3; then command -v python3; return 0; fi
+  if have python;  then command -v python;  return 0; fi
+  return 1
+}
 
 # --- auto-detect hardware profile (scripts/hardware_profile.py) -------------
 # Reads the single source of truth. Override any field with env vars if needed.
-if command -v python3 >/dev/null 2>&1; then
-  PROFILE_JSON="$(python3 "$HERE/hardware_profile.py" --json)"
-  hp() { python3 -c "import sys,json;print(json.loads('''$PROFILE_JSON''').get('$1',''))"; }
+if PROFILE_PY="$(profile_python)"; then
+  PROFILE_JSON="$("$PROFILE_PY" "$HERE/hardware_profile.py" --json)"
+  hp() { "$PROFILE_PY" -c "import sys,json;print(json.loads('''$PROFILE_JSON''').get('$1',''))"; }
   : "${VLM_MODEL:=$(hp vlm_model)}"
   : "${ASR_DEFAULT_MODEL:=$(hp asr_model)}"
   : "${ASR_COMPUTE_TYPE:=$(hp compute_type)}"
@@ -27,21 +57,41 @@ else
   : "${ASR_DEFAULT_MODEL:=small}"
   : "${ASR_COMPUTE_TYPE:=int8}"
   : "${ASR_DEVICE:=cpu}"
-  HP_PROFILE="(python3 missing — defaults)"
+  HP_PROFILE="(python missing — defaults)"
 fi
-
-log() { printf '[setup] %s\n' "$*"; }
-have() { command -v "$1" >/dev/null 2>&1; }
 
 # --- 1. ollama + vision model -------------------------------------------------
+# Git Bash / MSYS does not export USERPROFILE (it uses HOME), but the Windows
+# ollama CLI's envconfig panics with "%userprofile% is not defined" when it
+# expands default paths. Map it from HOME before touching ollama.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if [ -z "${USERPROFILE:-}" ]; then
+      if have cygpath; then
+        export USERPROFILE="$(cygpath -w "$HOME")"
+      else
+        export USERPROFILE="$(printf '%s' "$HOME" | sed 's|^/\([a-zA-Z]\)/|\1:/|; s|/|\\\\|g')"
+      fi
+    fi
+    ;;
+esac
+
 if ! have ollama; then
-  log "ERROR: ollama not found. Install: curl -fsSL https://ollama.com/install.sh | sh"
+  log "ERROR: ollama not found. Install:"
+  log "  Linux/macOS: curl -fsSL https://ollama.com/install.sh | sh"
+  log "  Windows:     winget install Ollama.Ollama  (or download from ollama.com)"
   exit 1
 fi
-if ! pgrep -x ollama >/dev/null 2>&1; then
-  log "ollama daemon not running — starting (background)..."
-  ollama serve >/tmp/ollama.log 2>&1 &
-  sleep 2
+# Probe the daemon by asking it something; pgrep is not portable (no pgrep in
+# Git Bash) and a process name check says nothing about readiness.
+if ! ollama list >/dev/null 2>&1; then
+  log "ollama daemon not reachable — starting (background)..."
+  ollama serve >"${TMPDIR:-/tmp}/ollama.log" 2>&1 &
+  for _ in $(seq 1 15); do
+    ollama list >/dev/null 2>&1 && break
+    sleep 1
+  done
+  ollama list >/dev/null 2>&1 || { log "ERROR: ollama serve did not come up (see ${TMPDIR:-/tmp}/ollama.log)"; exit 1; }
 fi
 
 # ollama list prints names with tags (e.g. "openbmb/minicpm-v4.6:latest").
@@ -55,31 +105,58 @@ else
 fi
 
 # --- 2. python venv + faster-whisper -----------------------------------------
-if ! have uv && ! have python3; then
+if ! have uv && ! have python3 && ! have python; then
   log "ERROR: need uv or python3 to build venv"; exit 1
 fi
 
 if [[ ! -d "$VENV_DIR" ]]; then
   log "Creating venv at $VENV_DIR ..."
   if have uv; then
+    # uv picks a native toolchain python — on Windows Git Bash the PATH python
+    # may be an MSYS/mingw build whose venvs (bin/ layout, no ctranslate2
+    # wheels) cannot host faster-whisper. uv sidesteps that entirely.
     uv venv "$VENV_DIR" >/dev/null
-    # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate"
-    uv pip install --quiet "faster-whisper>=1.0.3" genanki
+    uv pip install --python "$(venv_python)" --quiet "faster-whisper>=1.0.3" genanki
   else
-    python3 -m venv "$VENV_DIR"
-    # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate"
-    pip install --quiet "faster-whisper>=1.0.3" genanki
+    PY_BIN="$(command -v python3 || command -v python)"
+    case "$(uname -s)" in
+      MINGW*|MSYS*|CYGWIN*)
+        case "$PY_BIN" in
+          /mingw64/*|/usr/*|/clang64/*|/clangarm64/*)
+            log "ERROR: on Windows the venv must be built by NATIVE python, but"
+            log "  '$PY_BIN' is an MSYS/mingw interpreter — its venvs cannot host"
+            log "  faster-whisper (no ctranslate2 wheels). Install uv (preferred):"
+            log "    winget install astral-sh.uv"
+            log "  or point PATH at native python (python.org / conda) and retry."
+            exit 1
+            ;;
+        esac
+        ;;
+    esac
+    "$PY_BIN" -m venv "$VENV_DIR"
+    "$(venv_python)" -m pip install --quiet --upgrade pip
+    "$(venv_python)" -m pip install --quiet "faster-whisper>=1.0.3" genanki
   fi
   log "Installed faster-whisper + genanki into venv"
 else
   log "venv exists: $VENV_DIR (skipping create)"
 fi
+VENV_PY="$(venv_python)" || { log "ERROR: venv dir exists but no python found inside"; exit 1; }
+"$VENV_PY" -c "import faster_whisper" 2>/dev/null || {
+  log "venv missing faster-whisper — installing..."
+  if have uv; then
+    uv pip install --python "$VENV_PY" --quiet "faster-whisper>=1.0.3" genanki
+  else
+    "$VENV_PY" -m pip install --quiet "faster-whisper>=1.0.3" genanki
+  fi
+}
 
 # --- 3. ffmpeg ---------------------------------------------------------------
 if ! have ffmpeg; then
-  log "ERROR: ffmpeg not found. Install: brew install ffmpeg"
+  log "ERROR: ffmpeg not found. Install:"
+  log "  macOS:   brew install ffmpeg"
+  log "  Linux:   sudo apt install ffmpeg"
+  log "  Windows: winget install Gyan.FFmpeg"
   exit 1
 fi
 
@@ -90,6 +167,6 @@ cat <<EOF
     -> VLM      : $VLM_MODEL
     -> ASR      : faster-whisper '$ASR_DEFAULT_MODEL' (compute=$ASR_COMPUTE_TYPE, device=$ASR_DEVICE)
   venv          : $VENV_DIR
+  run python as : $VENV_PY
   Override with : VLM_MODEL=... ASR_DEFAULT_MODEL=... bash setup_models.sh
-  Activate with : source $VENV_DIR/bin/activate
 EOF
