@@ -664,7 +664,11 @@ def main() -> int:
         mseg = merged_data["segments"]
         raw_text = build_interleaved_text(mseg)
         # merged text interleaves tables/formulas — raise the cap so they survive.
-        char_limit = args.char_limit or 20000
+        # 45k: map-reduce chunks the text (4.5k each) so small models stay
+        # accurate; the cap only bounds runtime. 20k silently dropped the
+        # back half of 60-90 min lectures (measured: 86k interleaved chars
+        # on a 67-min lesson). Raise --char-limit for full coverage.
+        char_limit = args.char_limit or 45000
         print(f"[v2k] merged mode: {len(mseg)} ASR segments, "
               f"{merged_data.get('used_visual', 0)}/{merged_data.get('visual_count', 0)} "
               f"visual frames"
