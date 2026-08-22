@@ -109,12 +109,14 @@ def cap_by_time(ts: list[float], max_frames: int, fps: float = 1.0,
 
     Frames are clustered by time gaps (a gap > `gap` seconds starts a new
     cluster: a burst of changes within a few seconds is one "topic burst").
-    Every cluster keeps at least its FINAL frame (the settled state of that
-    burst); the remaining budget is distributed across clusters in proportion
-    to their size, and picks inside a cluster are spread evenly (first and
-    last always included). A 100-frame animation burst therefore no longer
-    starves isolated key slides of budget, and every burst keeps its most
-    complete state even under pressure.
+    When there are more clusters than budget, bursts are stratified evenly
+    across the timeline (each represented by its settled final frame) so no
+    part of the video is dropped. Otherwise every cluster keeps at least its
+    FINAL frame (the settled state of that burst); the remaining budget is
+    distributed across clusters in proportion to their size, and picks inside
+    a cluster are spread evenly (first and last always included). A 100-frame
+    animation burst therefore no longer starves isolated key slides of budget,
+    and every burst keeps its most complete state even under pressure.
 
     `gap` defaults to max(5.0, 2/fps) seconds. Returns the selected timestamps
     in order. Also imported by build_notes.py to cap key frames for notes.
@@ -129,12 +131,26 @@ def cap_by_time(ts: list[float], max_frames: int, fps: float = 1.0,
         else:
             clusters[-1].append(t)
     if len(clusters) > max_frames:
-        # More bursts than budget: keep the final frame of the max_frames
-        # LARGEST bursts (ties prefer LATER ones — end-of-video summary
-        # slides tend to matter more than early ones).
-        ranked = sorted(range(len(clusters)),
-                        key=lambda c: (-len(clusters[c]), -clusters[c][0]))
-        return [clusters[c][-1] for c in sorted(ranked[:max_frames])]
+        # More topic bursts than budget: picking the LARGEST bursts starves
+        # isolated single-slide clusters (a slide-lecture's one-frame-per-slide
+        # intro loses to any multi-frame demo burst, blanking the first third
+        # of the video). Stratify over TIME instead: evenly spaced target
+        # points across the timeline, each mapped to the burst whose settled
+        # (final) frame is closest, so the capped set reads start-to-end.
+        finals = [c[-1] for c in clusters]
+        span = finals[-1] - finals[0]
+        if max_frames > 1 and span > 0:
+            targets = [finals[0] + span * i / (max_frames - 1)
+                       for i in range(max_frames)]
+        else:
+            targets = [finals[0]] * max_frames
+        picked: list[float] = []
+        for tgt in targets:
+            rest = [t for t in finals if t not in picked]
+            if not rest:
+                break
+            picked.append(min(rest, key=lambda t: abs(t - tgt)))
+        return sorted(picked)
     # Guarantee the final frame of every cluster, then hand out the remaining
     # budget proportionally to (size - 1) via largest-remainder rounding.
     weights = [len(c) - 1 for c in clusters]
