@@ -1,7 +1,8 @@
-# Outputs Reference (Step 2.2 / 2.3)
+# Outputs Reference (Step 2.2 / 2.3 / 2.4)
 
 `build_knowledge.py --format` controls which artifacts are produced from the
-subtitles. `--format all` (default) emits all three.
+subtitles. `--format all` (default) emits all three. Illustrated notes (2.4)
+come from the separate `build_notes.py`.
 
 ## 2.2 — HTML (`knowledge.html`)
 
@@ -49,6 +50,29 @@ Install the deck:
 1. Open Anki desktop.
 2. File → Import → select `cards.apkg`.
 3. The deck `视频知识卡` (or your `--deck` name) appears in the deck list.
+
+## 2.4 — Illustrated notes (`notes.md` + `notes.html`)
+
+`build_notes.py` interleaves deduped key frames with the narration around each
+timestamp. Inputs: `--subtitles` (either path's `.json`) + `--frames`
+(`frames.json` from `extract_frames.py`). Per key frame (capped by
+`--max-frames`, default 12):
+
+```markdown
+## [mm:ss] <LLM section title, <=12 chars>
+![mm:ss](<relative path to frame jpg>)
+**画面**：<optional VLM description, --describe-frames>
+<1-2 sentence note condensed from the narration window>
+> 原声：<verbatim subtitle excerpt>
+```
+
+- `notes.md` uses RELATIVE image refs — it renders in VS Code/Typora/GitHub as
+  long as the frames dir travels with the note.
+- `notes.html` embeds every frame as a base64 data URL — a single shareable
+  file, no sidecar files needed.
+- `--describe-frames` costs one VLM call per key frame; section titles/notes
+  cost one text-model call each. Without a reachable Ollama both degrade to
+  raw narration excerpts (the note still emits).
 
 ## Generating only one artifact
 

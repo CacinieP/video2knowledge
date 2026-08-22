@@ -127,12 +127,33 @@ Produces, in `OUT/`:
 | 2.1 Knowledge doc (templated) | `knowledge.md` | uses `assets/default-template.md` or `--template <file>` |
 | 2.2 Self-contained HTML | `knowledge.html` | clickable `[mm:ss]` timeline |
 | 2.3 Knowledge cards | `cards.csv` | `question,answer,tags,timestamp,source` |
+| 2.4 Illustrated notes (图文笔记) | `notes.md` + `notes.html` | key frames × narration, see below |
 
 Then convert cards to Anki (2.3 final):
 
 ```bash
 python3 scripts/gen_apkg.py --csv OUT/cards.csv --out OUT/cards.apkg --deck "视频知识卡"
 ```
+
+### Illustrated notes (2.4, 图文笔记)
+
+A scrollable note that interleaves deduped KEY FRAMES with the narration around
+each timestamp — the "watch it back as a reading" artifact. Needs `frames.json`
+(from `extract_frames.py`, usually via Path 1's dedup mode) plus either path's
+subtitles:
+
+```bash
+python3 scripts/build_notes.py \
+  --subtitles OUT/subtitles.json \
+  --frames OUT/frames/frames.json \
+  --out-dir OUT --max-frames 12 --describe-frames
+```
+
+Per key frame: LLM section title → frame image → optional VLM 画面 description
+(`--describe-frames`) → 1-2 sentence note condensed from the narration window →
+verbatim 原声 excerpt. Emits `notes.md` (relative image refs, renders anywhere
+the frames dir travels) and `notes.html` (frames embedded as base64 — a single
+shareable file). Degrades to frames + raw excerpts when no model is reachable.
 
 See `references/outputs.md` for schema, single-format runs, and degraded mode.
 
@@ -211,6 +232,7 @@ EOF
 | `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}` |
 | `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` |
 | `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv; `--merged` for dual-path fusion with `{{visual_timeline}}` section + map-reduce |
+| `scripts/build_notes.py` | Step 2.4: illustrated notes (图文笔记): key frames × narration → notes.md + self-contained notes.html |
 | `scripts/gen_apkg.py` | Step 2.3: cards.csv → Anki `.apkg` |
 
 ## References (load as needed)
