@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import json
 import os
 import sys
@@ -97,7 +98,8 @@ def caption_frame(host: str, model: str, jpg: Path, prompt: str, ocr: bool) -> s
 
 
 def frames_from(video: Path, out_dir: Path, interval: float, mode: str,
-                dedup_fps: float, dedup_hamming: int, max_frames: int) -> Path:
+                dedup_fps: float, dedup_hamming: int, max_frames: int,
+                hash_size: int = 8, hash_mode: str = "dhash") -> Path:
     """Delegate frame extraction to extract_frames.py (same dir)."""
     here = Path(__file__).resolve().parent
     import subprocess
@@ -109,9 +111,32 @@ def frames_from(video: Path, out_dir: Path, interval: float, mode: str,
     else:  # dedup
         cmd += ["--dedup-fps", str(dedup_fps),
                 "--dedup-hamming", str(dedup_hamming),
-                "--max-frames", str(max_frames)]
+                "--max-frames", str(max_frames),
+                "--hash-size", str(hash_size),
+                "--hash-mode", hash_mode]
     subprocess.run(cmd, check=True)
     return out_dir / "frames" / "frames.json"
+
+
+def _norm_ocr(text: str) -> str:
+    """OCR text for similarity: drop ALL whitespace (line breaks and wrap
+    points differ between runs) and case."""
+    return "".join(text.split()).casefold()
+
+
+def ocr_texts_differ(prev: str, cur: str, threshold: float = 0.9) -> bool:
+    """True when `cur` carries new on-screen knowledge vs `prev`.
+
+    Visual change is not knowledge change: dHash keeps frames for cursor
+    blinks, partial redraws and animation noise, and the VLM OCR of two such
+    frames is near-identical. This gate (used in --prompt-ocr runs) drops a
+    frame whose OCR text is >= `threshold` similar to the last KEPT frame, so
+    every emitted caption carries new text and wasted VLM calls disappear.
+    """
+    a, b = _norm_ocr(prev), _norm_ocr(cur)
+    if not a or not b:
+        return bool(a) != bool(b)
+    return difflib.SequenceMatcher(None, a, b).ratio() < threshold
 
 
 def to_srt(records: list[dict]) -> str:
@@ -143,12 +168,25 @@ def main() -> int:
                     help="dense sample rate in dedup mode (default 1.0)")
     ap.add_argument("--dedup-hamming", type=int, default=10,
                     help="dHash change threshold in dedup mode (default 10)")
+    ap.add_argument("--hash-size", type=int, default=8,
+                    help="dHash size n -> n*n bits (default 8 = 64 bits)")
+    ap.add_argument("--hash-mode", choices=["dhash", "dual"], default="dhash",
+                    help="dual = dHash+aHash for flat/gradient content dHash "
+                         "cannot see (scale --dedup-hamming ~2.5x)")
     ap.add_argument("--max-frames", type=int, default=120,
                     help="frame cap in dedup mode (default 120)")
     ap.add_argument("--prompt-ocr", action="store_true",
                     help="use the table/formula OCR prompt instead of the short "
                          "caption prompt (for slide/PPT videos where ASR misses "
                          "on-screen text/tables/examples)")
+    ap.add_argument("--no-ocr-dedup", action="store_true",
+                    help="disable the OCR text-change gate (default: with "
+                         "--prompt-ocr, a frame whose OCR text is >= 90% "
+                         "similar to the last kept frame is dropped — visual "
+                         "change without knowledge change)")
+    ap.add_argument("--ocr-dedup-threshold", type=float, default=0.9,
+                    help="similarity ratio above which two OCR texts count as "
+                         "the same slide (default 0.9)")
     ap.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     args = ap.parse_args()
 
@@ -160,22 +198,42 @@ def main() -> int:
     ping(args.host)
 
     manifest = frames_from(args.video, args.out_dir, args.interval, args.mode,
-                           args.dedup_fps, args.dedup_hamming, args.max_frames)
+                           args.dedup_fps, args.dedup_hamming, args.max_frames,
+                           hash_size=args.hash_size, hash_mode=args.hash_mode)
     frames = json.loads(manifest.read_text())["frames"]
     prompt = PROMPT_OCR if args.prompt_ocr else PROMPT
+    ocr_gate = args.prompt_ocr and not args.no_ocr_dedup
     print(f"[mm] {len(frames)} frames to caption with {args.model}"
-          f" ({'OCR' if args.prompt_ocr else 'caption'} prompt)", file=sys.stderr)
+          f" ({'OCR' if args.prompt_ocr else 'caption'} prompt"
+          f"{', text-dedup gate' if ocr_gate else ''})", file=sys.stderr)
 
     captions = []
+    dropped = 0
+    prev_text: str | None = None
+    last_t = frames[-1]["t"] if frames else 0.0
     for i, fr in enumerate(frames):
         t0 = time.time()
         text = caption_frame(args.host, args.model, Path(fr["file"]), prompt, args.prompt_ocr)
         elapsed = time.time() - t0
-        next_t = frames[i + 1]["t"] if i + 1 < len(frames) else fr["t"] + args.interval
-        captions.append({"start": fr["t"], "end": next_t, "text": text})
+        if ocr_gate and prev_text is not None and \
+                not ocr_texts_differ(prev_text, text, args.ocr_dedup_threshold):
+            dropped += 1
+            print(f"[mm] {i+1}/{len(frames)} @ {fr['t']:.1f}s: OCR text unchanged"
+                  f" — dropped (visual change, no knowledge change)", file=sys.stderr)
+            continue
+        captions.append({"start": fr["t"], "end": None, "text": text})
+        prev_text = text
         preview = text.replace("\n", " ")[:60]
         print(f"[mm] {i+1}/{len(frames)} @ {fr['t']:.1f}s ({elapsed:.1f}s): {preview}",
               file=sys.stderr)
+
+    # Each kept caption runs until the next KEPT frame (covering dropped
+    # duplicates' time); the last one runs `interval` past the final sample.
+    for i, c in enumerate(captions):
+        c["end"] = captions[i + 1]["start"] if i + 1 < len(captions) \
+            else last_t + args.interval
+    if dropped:
+        print(f"[mm] OCR gate dropped {dropped} near-duplicate frame(s)", file=sys.stderr)
 
     (args.out_dir / "captions.srt").write_text(to_srt(captions), encoding="utf-8")
     (args.out_dir / "captions.json").write_text(
