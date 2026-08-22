@@ -255,6 +255,7 @@ def main() -> int:
                 processed["n"] += 1
             except Exception as e:
                 log("A", f"FAILED {v.name}: {e}")
+                (d / ".failed").write_text(f"stageA: {e}\n", encoding="utf-8")
                 b.blog("A", f"FAILED {v}: {e}\n{traceback.format_exc()}")
 
     def worker_b():
@@ -262,7 +263,7 @@ def main() -> int:
             if (d / ".failed").exists():
                 continue
             while not (d / ".asr_done").exists() and not (d / ".failed").exists() \
-                    and not (d / ".done").exists() and not a_thread.is_done():
+                    and not (d / ".done").exists() and a_thread.is_alive():
                 time.sleep(5)
             if (d / ".done").exists():
                 continue  # already finished in an earlier invocation — silent
