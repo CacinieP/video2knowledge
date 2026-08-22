@@ -6,11 +6,16 @@ of videos, and per video runs the validated Path-3 chain —
 
     A: asr_caption.py (small + zh + hotwords, wav deleted after)
     B: mm_caption.py --mode dedup --prompt-ocr --hash-size 16 --dedup-hamming 40
+       -> hotwords_from_ocr.py (OCR terms -> course vocab; coverage check;
+          --asr-verify re-transcribes when coverage is poor)
        -> merge_visual.py -> build_knowledge.py --merged --format all
        -> build_notes.py --docx --pdf --describe-frames -> gen_apkg.py
 
 Two threads pipeline the two resource pools (faster-whisper CPU vs Ollama),
-so stage B of video i overlaps stage A of video i+1. Everything is resumable:
+so stage B of video i overlaps stage A of video i+1. Stage B feeds the OCR
+terms of finished videos into course_hotwords.txt, which stage A merges into
+the hotwords of LATER videos — the cross-path loop pays off across the batch
+without re-running anything. Everything is resumable:
 per-video run dirs carry .asr_done / .done / .failed markers — rerun the same
 command and finished videos are skipped. A summary CSV + batch.log record
 progress; per-video stdout/stderr land in each run dir.
@@ -60,11 +65,16 @@ def venv_python() -> str:
 
 
 def sanitize(rel: str) -> str:
-    """Filesystem-safe run-dir name that keeps CJK readable."""
+    """Run-dir path mirroring the library layout: <course>/<chapter>/<video-stem>.
+
+    Nested (not flattened) so large batches stay browsable and same-named
+    files in different chapters cannot collide. Each part is filesystem-safe
+    while keeping CJK readable.
+    """
     p = Path(rel.replace("\\", "/"))
-    s = str(p.with_suffix(""))  # drop the video extension
-    s = re.sub(r"[/:*?\"<>|\s.]+", "_", s)
-    return re.sub(r"_+", "_", s).strip("_")[:120]
+    parts = [re.sub(r"[\/:*?\"<>|\s.]+", "_", part).strip("_") or "_"
+             for part in p.with_suffix("").parts]
+    return str(Path(*parts))[:200]
 
 
 def load_hotwords(spec: str) -> str:
@@ -89,6 +99,7 @@ class Batch:
                      "build_s", "notes_s", "run_dir"])
         self.logf = open(self.out_root / "batch.log", "a", encoding="utf-8")
         self.log_lock = threading.Lock()
+        self.course_vocab = self.out_root / "course_hotwords.txt"
         self.done_count = 0
         self.total = 0
         self.t0 = time.time()
@@ -111,6 +122,35 @@ class Batch:
             raise RuntimeError(f"exit {r.returncode}: {' '.join(cmd[:6])}...")
         return time.time() - t
 
+    def try_run(self, cmd: list[str], log_path: Path) -> int:
+        """Run without raising — for advisory steps whose exit code we act on."""
+        with log_path.open("a", encoding="utf-8") as lf:
+            r = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)
+        return r.returncode
+
+    def _effective_hotwords(self, run_dir: Path) -> str:
+        """Manual hotwords + accumulated course OCR vocabulary (if any), as an
+        @file for asr_caption.py. Manual terms stay first; the total is capped
+        so whisper's initial_prompt stays inside its token budget."""
+        if self.args.no_ocr_hotwords:
+            return self.args.hotwords
+        terms: list[str] = []
+        for t in load_hotwords(self.args.hotwords).replace("、", ";").replace(",", ";").split(";"):
+            t = t.strip()
+            if t and t not in terms:
+                terms.append(t)
+        if self.course_vocab.is_file():
+            for ln in self.course_vocab.read_text(encoding="utf-8").splitlines():
+                ln = ln.strip()
+                if ln and ln not in terms:
+                    terms.append(ln)
+        if not terms:
+            return self.args.hotwords
+        f = run_dir / "hotwords_effective.txt"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("\n".join(terms[:50]) + "\n", encoding="utf-8")
+        return "@" + str(f)
+
     # --- stage A: audio -> subtitles ------------------------------------------
     def stage_a(self, video: Path, run_dir: Path) -> None:
         if (run_dir / ".asr_done").exists() or (run_dir / ".done").exists():
@@ -122,7 +162,7 @@ class Batch:
             [self.py, str(HERE / "asr_caption.py"),
              "--video", str(video), "--out-dir", str(run_dir),
              "--model", self.args.asr_model, "--language", "zh",
-             "--hotwords", self.args.hotwords], lg, "A")
+             "--hotwords", self._effective_hotwords(run_dir)], lg, "A")
         subs = run_dir / "subtitles.json"
         n = len(__import__("json").loads(subs.read_text(encoding="utf-8"))
                 .get("segments", [])) if subs.exists() else 0
@@ -150,6 +190,30 @@ class Batch:
              "--mode", "dedup", "--prompt-ocr",
              "--model", self.args.vlm_model,
              "--hash-size", "16", "--dedup-hamming", "40"], lg, "B")
+        # cross-path loop: OCR terms -> course vocab (feeds later stage-A runs)
+        # + coverage check against this video's ASR text
+        if not self.args.no_ocr_hotwords:
+            cmd = [self.py, str(HERE / "hotwords_from_ocr.py"),
+                   "--captions", str(run_dir / "captions.json"),
+                   "--subtitles", str(run_dir / "subtitles.json"),
+                   "--course-vocab", str(self.course_vocab),
+                   "--out", str(run_dir / "ocr_hotwords.txt"),
+                   "--manual", self.args.hotwords]
+            if self.args.asr_verify:
+                cmd += ["--fail-under", "0.5"]
+            rc = self.try_run(cmd, lg)
+            if rc == 3 and self.args.asr_verify:
+                log("B", f"ASR verify: coverage too low, re-transcribing {name} "
+                         f"with OCR hotwords")
+                self.run(
+                    [self.py, str(HERE / "asr_caption.py"),
+                     "--video", str(video), "--out-dir", str(run_dir),
+                     "--model", self.args.asr_model, "--language", "zh",
+                     "--hotwords", "@" + str(run_dir / "ocr_hotwords.txt")],
+                    lg, "B")
+            elif rc not in (0, 3):
+                log("B", f"hotwords_from_ocr exited {rc} for {name} "
+                         f"(continuing — advisory step)")
         s[1] = self.run(
             [self.py, str(HERE / "merge_visual.py"),
              "--subtitles", str(run_dir / "subtitles.json"),
@@ -212,6 +276,14 @@ def main() -> int:
     ap.add_argument("--only", default="", help="regex — only process matching paths")
     ap.add_argument("--limit", type=int, default=0, help="stop after N NEW videos (0=all)")
     ap.add_argument("--no-notes", action="store_true")
+    ap.add_argument("--no-ocr-hotwords", action="store_true",
+                    help="disable the OCR->hotwords feedback loop (no course "
+                         "vocab accumulation, no coverage check)")
+    ap.add_argument("--asr-verify", action="store_true",
+                    help="when a video's OCR-term coverage in its ASR text "
+                         "falls below 50%%, re-transcribe it with the OCR-"
+                         "enriched hotwords (costs a second ASR pass per "
+                         "affected video)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 

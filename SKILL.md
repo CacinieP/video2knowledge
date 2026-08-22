@@ -238,6 +238,7 @@ EOF
 | `scripts/build_notes.py` | Step 2.4: illustrated notes (图文笔记): key frames × narration → notes.md + self-contained notes.html; `--docx` / `--pdf` for office/print |
 | `scripts/md_export.py` | Shared Markdown → DOCX/PDF exporter (python-docx + fpdf2, CJK font auto-detect, ffmpeg-JPEG normalize); standalone CLI for any pipeline .md |
 | `scripts/gen_apkg.py` | Step 2.3: cards.csv → Anki `.apkg` |
+| `scripts/batch_run.py` | Batch a whole course library: ASR + Ollama two-thread pipeline, resumable markers, priority `--order`, summary CSV |
 
 ## References (load as needed)
 

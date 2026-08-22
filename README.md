@@ -371,7 +371,8 @@ video2knowledge/
 │   ├── build_knowledge.py         # 第二步：字幕 → 知识文档/HTML/CSV（--format docx/pdf 可导 office）
 │   ├── build_notes.py             # 2.4：图文笔记（关键帧 × 旁白）→ notes.md/.html（--docx/--pdf）
 │   ├── md_export.py               # Markdown → DOCX/PDF 导出器（python-docx + fpdf2，CJK 字体自检）
-│   └── gen_apkg.py                # 2.3：CSV → Anki .apkg
+│   ├── gen_apkg.py                # 2.3：CSV → Anki .apkg
+│   └── batch_run.py               # 批量跑整个课程库（两级流水线、断点续跑、优先级排序）
 ├── references/                    # 详细文档（按需加载）
 │   ├── hardware-profiles.md
 │   ├── path1-multimodal.md

@@ -84,16 +84,19 @@ def build_interleaved_text(segs: list[dict]) -> str:
         ts = fmt_mmss(s["start"])
         audio = s["text"].strip()
         vis = (s.get("visual") or "").strip()
+        # merge_visual.py semantic-check notes surface as ⚠️ so the model knows
+        # this visual attribution is swapped-from-timestamp or uncertain
+        warn = f"  | ⚠️{s['note'].strip()}" if s.get("note") else ""
         if vis:
             # mark by content identity to avoid repeating identical visual text
             vid = hash(vis)
             if vid in seen_visual:
-                lines.append(f"[{ts}] 🎙️{audio}  | 🖼️(画面同上)")
+                lines.append(f"[{ts}] 🎙️{audio}{warn}  | 🖼️(画面同上)")
             else:
                 seen_visual.add(vid)
-                lines.append(f"[{ts}] 🎙️{audio}\n🖼️画面:\n{vis}")
+                lines.append(f"[{ts}] 🎙️{audio}{warn}\n🖼️画面:\n{vis}")
         else:
-            lines.append(f"[{ts}] 🎙️{audio}")
+            lines.append(f"[{ts}] 🎙️{audio}{warn}")
     return "\n".join(lines)
 
 
@@ -251,6 +254,76 @@ def _merge_list_items(items: list[str], max_n: int) -> str:
     return "\n".join(out)
 
 
+def _parse_qa_pairs(lines: list[str]) -> list[tuple[str, str]]:
+    """Parse 'Q:'/'A:' lines into (q, a) pairs. Line-level dedup (the plain
+    _merge_list_items path) can orphan an 'A:' line from its 'Q:' — QA must be
+    deduped and capped as PAIRS, by question text."""
+    pairs, cur_q, cur_a = [], None, None
+    for ln in lines:
+        s = ln.strip()
+        low = s.lower()
+        if low.startswith("q:"):
+            if cur_q is not None:
+                pairs.append((cur_q, cur_a or ""))
+            cur_q, cur_a = s[2:].strip(), None
+        elif low.startswith("a:"):
+            cur_a = s[2:].strip()
+    if cur_q is not None:
+        pairs.append((cur_q, cur_a or ""))
+    return pairs
+
+
+def _dedupe_qa_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen, out = set(), []
+    for q, a in pairs:
+        key = re.sub(r"\s+", "", q)
+        if key and key not in seen:
+            seen.add(key)
+            out.append((q, a))
+    return out
+
+
+def _rerank_list(host: str, model: str | None, key: str, items: list[str],
+                 summary: str, lang: str, cap: int, line_budget: int) -> str | None:
+    """One GLOBAL pass over map-reduced list items: merge duplicates, restore
+    cross-chunk order, select the top `cap`, with the (already computed)
+    overall summary as context. Chunk-local extraction breaks ordering and
+    misses cross-boundary duplicates; this pass restores both. Returns None
+    when there is nothing to cut, no model, or the response is unusable —
+    the caller then falls back to truncation."""
+    if not items or len(items) <= cap or not (model and ping(host)):
+        return None
+    zh_names = {"timeline": "关键事件节点", "key_points": "核心知识点",
+                "qa": "问答", "glossary": "术语"}
+    if lang == "zh":
+        instr = (f"任务：下面是对一段长视频分块抽取的{zh_names.get(key, key)}候选条目，"
+                 f"可能重复、顺序混乱或在分块边界处断裂。请结合视频总体摘要，合并重复项、"
+                 f"恢复合理顺序，从中选出最重要的至多{cap}条。保持每行原格式不变；"
+                 f"[mm:ss] 时间戳必须原样保留，不要新编。只输出最终列表，不要解释。\n\n"
+                 f"视频总体摘要：\n{summary[:1500]}")
+    else:
+        instr = (f"Task: the items below are chunk-extracted "
+                 f"{zh_names.get(key, key)} candidates from a long video — "
+                 f"possibly duplicated, out of order, or split across chunk "
+                 f"boundaries. Using the overall summary for context, merge "
+                 f"duplicates, restore a sensible order, and keep the top {cap}. "
+                 f"Keep each line's format unchanged; preserve [mm:ss] timestamps "
+                 f"verbatim. Output the final list only.\n\n"
+                 f"Overall summary:\n{summary[:1500]}")
+    try:
+        resp = ask_llm(host, model, instr + "\n\n候选条目:\n" + "\n".join(items))
+        cleaned = _strip_fence(resp or "")
+        out_lines = [l for l in cleaned.splitlines() if l.strip()]
+        # sanity: a rerank must not balloon, come back empty, or echo prose
+        if 1 <= len(out_lines) <= line_budget + 6 and \
+                sum(1 for l in out_lines if l.strip().startswith(("-", "Q:", "A:"))) \
+                >= len(out_lines) * 0.6:
+            return "\n".join(out_lines)
+    except Exception:
+        pass
+    return None
+
+
 def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                    lang: str = "zh", char_limit: int = 8000) -> dict:
     """Ask the LLM for summary / timeline / key points / QA / glossary.
@@ -370,9 +443,11 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     tasks = TASKS.get(lang, TASKS["en"])
     sublabel = "字幕" if lang == "zh" else "subtitles"
     # Map-reduce for long context: list-type fields (timeline/key_points/qa/glossary)
-    # are extracted per chunk then merged+deduped. This keeps each LLM call on a small,
-    # accurate context (small/mid models degrade badly on 18k+ char inputs — repeated
-    # output, dropped items, bad timestamps). summary is map(summarize)->reduce(summarize).
+    # are extracted per chunk then merged+deduped, then re-ranked in one global
+    # pass with the summary as context (restores cross-chunk order). This keeps
+    # each LLM call on a small, accurate context (small/mid models degrade badly
+    # on 18k+ char inputs — repeated output, dropped items, bad timestamps).
+    # summary is map(summarize)->reduce(summarize).
     CHUNK = 4500
     long_mode = len(sub) > CHUNK * 1.5
     chunks = _chunk_lines(sub, CHUNK) if long_mode else [sub]
@@ -386,8 +461,26 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                     resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + ch)
                     if resp and len(resp.strip()) > 3:
                         collected.extend(l for l in _strip_fence(resp).splitlines() if l.strip())
-                merged = _merge_list_items(collected, CAPS[key])
-                fields[key] = merged if merged else _heuristic_fallback(raw_text, {key: ""})[key]
+                if key == "qa":
+                    pairs = _dedupe_qa_pairs(_parse_qa_pairs(collected))
+                    items = [f"Q: {q}\nA: {a}" for q, a in pairs]
+                    budget = CAPS[key] * 2  # 2 lines per pair
+                else:
+                    items = _merge_list_items(collected, 100_000).splitlines()
+                    budget = CAPS[key]
+                # global re-rank (summary is computed first, so it is ready):
+                # restores cross-chunk order and merges chunk-boundary dupes
+                reranked = _rerank_list(host, model, key, items,
+                                        fields.get("summary", ""), lang,
+                                        CAPS[key], budget)
+                if reranked:
+                    fields[key] = reranked
+                elif key == "qa":
+                    fields[key] = "\n".join(f"Q: {q}\nA: {a}"
+                                            for q, a in pairs[:CAPS[key]])
+                else:
+                    merged = _merge_list_items(items, CAPS[key])
+                    fields[key] = merged if merged else _heuristic_fallback(raw_text, {key: ""})[key]
             elif long_mode and key == "summary":
                 # summarize each chunk, then summarize the concatenation
                 parts = []
@@ -574,7 +667,10 @@ def main() -> int:
         char_limit = args.char_limit or 20000
         print(f"[v2k] merged mode: {len(mseg)} ASR segments, "
               f"{merged_data.get('used_visual', 0)}/{merged_data.get('visual_count', 0)} "
-              f"visual frames; interleaved raw_text {len(raw_text)} chars, "
+              f"visual frames"
+              f" (swaps={merged_data.get('semantic_swaps', 0)},"
+              f" weak={merged_data.get('weak_attribution', 0)})"
+              f"; interleaved raw_text {len(raw_text)} chars, "
               f"cap {char_limit}; summarizing with {args.model}...", file=sys.stderr)
         visual_timeline = build_visual_timeline(
             merged_data.get("visual_blocks", []), args.host, args.model, lang=args.lang)
