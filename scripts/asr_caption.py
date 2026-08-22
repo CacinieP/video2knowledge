@@ -85,6 +85,22 @@ def to_vtt(segs: list[dict]) -> str:
     return "WEBVTT\n\n" + body
 
 
+def load_hotwords(spec: str | None) -> str | None:
+    """Parse --hotwords: comma/space/、-separated terms, or @file with one
+    term per line. Returns the initial_prompt string (None when empty)."""
+    if not spec:
+        return None
+    if spec.startswith("@"):
+        path = Path(spec[1:])
+        terms = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
+                 if ln.strip()]
+    else:
+        for sep in (",", "、", ";", "；"):
+            spec = spec.replace(sep, " ")
+        terms = spec.split()
+    return "、".join(dict.fromkeys(terms)) or None  # dedupe, keep order
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="faster-whisper ASR -> timestamped subtitles")
     ap.add_argument("--video", required=True, type=Path)
@@ -98,6 +114,11 @@ def main() -> int:
     ap.add_argument("--compute-type", default=DEFAULT_COMPUTE,
                     help=f"int8 | int8_float16 | float16 | float32 "
                          f"(default {DEFAULT_COMPUTE}, from profile)")
+    ap.add_argument("--hotwords", default=None,
+                    help="domain terms to bias transcription: comma/space "
+                         "separated, or @terms.txt (one per line). Passed to "
+                         "faster-whisper as initial_prompt — sharply reduces "
+                         "errors on jargon, names, formulas, product ids")
     args = ap.parse_args()
 
     if not args.video.is_file():
@@ -127,10 +148,14 @@ def main() -> int:
     model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
 
     language = None if args.language == "auto" else args.language
+    hotwords = load_hotwords(args.hotwords)
+    if hotwords:
+        print(f"[asr] hotwords ({len(hotwords.split('、'))} terms): "
+              f"{hotwords[:100]}", file=sys.stderr)
     print(f"[asr] transcribing (language={language or 'auto'})...", file=sys.stderr)
     segs_iter, info = model.transcribe(
         str(wav), language=language, beam_size=5, word_timestamps=True,
-        vad_filter=True,
+        vad_filter=True, initial_prompt=hotwords,
     )
 
     segs = []
