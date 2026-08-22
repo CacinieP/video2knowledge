@@ -1,6 +1,6 @@
 # 🎬 video2knowledge
 
-> 把视频变成**带时间戳的字幕 → 结构化知识文档 → HTML / Anki 卡片**。三条本地推理路径，**全程在本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
+> 把视频变成**带时间戳的字幕 → 结构化知识文档 → 图文笔记 → HTML / Anki 卡片**。三条本地推理路径，**全程在本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install-from-scratch)
@@ -16,6 +16,7 @@
 |---|---|---|
 | 📝 **带时间戳字幕** | `subtitles.srt` / `.vtt` / `.json` | 词级时间戳，可直接喂播放器或下游处理 |
 | 📄 **知识文档** | `knowledge.md` | 摘要 / 时间轴 / 核心知识点 / Q&A / 术语表 / **画面要点**，**支持自定义模板** |
+| 🖼️ **图文笔记** | `notes.md` + `notes.html` | 关键帧插图 × 对应旁白要点交错排版；HTML 版自包含单文件可直接分享 |
 | 🌐 **HTML** | `knowledge.html` | 自包含单文件，`[mm:ss]` 时间戳可点跳 |
 | 🃏 **知识卡片 CSV** | `cards.csv` | question / answer / tags / timestamp / source |
 | 📚 **Anki 牌组** | `cards.apkg` | 稳定 ID，重复导入不重复，开箱即用 |
@@ -76,30 +77,20 @@ bash scripts/setup_models.sh
 
 这个脚本会做三件事（**幂等，可重复执行**）：
 
-1. **自动检测你的机型**（RAM / GPU / Apple Silicon / NVIDIA），按档位挑模型；
+1. **自动检测你的机型**（RAM / GPU / Apple Silicon / NVIDIA，跨平台探测链），按档位挑模型；
 2. 启动 `ollama serve` 并拉取对应的 **VLM**（多模态，路径 1 用）；
-3. 建一个 venv，装好 `faster-whisper` + `genanki`。
+3. 在**仓库根目录**建一个 `.venv`，装好 `faster-whisper` + `genanki`。
 
-跑完会打印一段总结，**注意看最后一行 `Activate with:`**，那是要复制的激活命令。
+跑完会打印一段总结，**注意 `run python as:` 那一行**——那是本机 venv 解释器的绝对路径（Windows 是 `.venv/Scripts/python.exe`，macOS/Linux 是 `.venv/bin/python`，脚本自动识别）。
 
-**venv 建在哪里，由环境变量 `VENV_DIR` 决定**，两种选法：
-
-```bash
-# 方式 A（推荐给从 GitHub clone 的用户）：建在仓库内，直观、好找
-VENV_DIR=.venv bash scripts/setup_models.sh
-
-# 方式 B（脚本默认）：建在 ~/.zcode/skills/video2knowledge/.venv
-#   —— 这是 ZCode skill 场景下的固定路径。直接跑就是它：
-bash scripts/setup_models.sh
-```
-
-> 下面所有示例统一用方式 A（`source .venv/bin/activate`）；如果你用了方式 B，把激活命令换成 `setup_models.sh` 末尾打印的那行即可。
+想建在别处？用环境变量 `VENV_DIR=...` 覆盖。
 
 看看它给你选了什么档位：
 
 ```bash
 python3 scripts/hardware_profile.py
 # 例：8GB MacBook → profile=mid → whisper-small + minicpm-v4.6
+# 例：31GB Win11 台式机 → profile=high → whisper-medium + qwen3.5:4b
 ```
 
 > 💡 **下载慢 / 卡住？** 这些模型从 Ollama / PyPI 拉取，国内网络可设置代理提速：
@@ -108,17 +99,18 @@ python3 scripts/hardware_profile.py
 > bash scripts/setup_models.sh
 > ```
 
-### 第 3 步 · 激活 venv（每次新开终端都要做）
+### 第 3 步 · 运行时用哪个 python
+
+示例里统一写 `python3`（已激活 venv 的前提下）。两种等价用法任选：
 
 ```bash
-# 用了上面的方式 A（仓库内 venv）：
-source .venv/bin/activate
+# 用法 A：激活 venv（macOS/Linux；Windows Git Bash 用 Scripts/activate）
+source .venv/bin/activate            # 或 .venv/Scripts/activate
 
-# 用了方式 B（脚本默认路径）：
-source ~/.zcode/skills/video2knowledge/.venv/bin/activate
+# 用法 B：不激活，直接用绝对路径（就是 setup_models.sh 打印的 run python as）
+.venv/bin/python scripts/asr_caption.py ...      # macOS/Linux
+.venv/Scripts/python.exe scripts/asr_caption.py ...  # Windows
 ```
-
-> 不确定自己用了哪种？跑 `ls .venv/bin/activate 2>/dev/null` —— 有输出就是方式 A，否则就是方式 B。
 
 ### 第 4 步 ·（可选）作为 agent skill 使用
 
@@ -130,12 +122,7 @@ source ~/.zcode/skills/video2knowledge/.venv/bin/activate
 | **Claude Code** | `~/.claude/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.claude/skills/video2knowledge` |
 | **Cursor** | `~/.cursor/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.cursor/skills/video2knowledge` |
 
-> 仓库内置的 `scripts/setup_models.sh` 默认把 venv 建在 `~/.zcode/skills/video2knowledge/.venv`（即上表的 ZCode 行）。**装到其他 agent 目录时**，建议改用方式 A 把 venv 建在仓库内，避免路径错配：
-> ```bash
-> cd ~/.claude/skills/video2knowledge   # 或 ~/.cursor/skills/video2knowledge
-> VENV_DIR=.venv bash scripts/setup_models.sh
-> ```
-> 之后在该仓库内处理视频时统一用 `source .venv/bin/activate`。
+> 仓库内置的 `scripts/setup_models.sh` 会把 venv 建在**仓库根目录的 `.venv/`**，装到任何 agent 目录都一样，无需额外配置。
 
 > 仅当不通过 agent、直接在终端用脚本时，可跳过本步——`SKILL.md` 是给 agent 读的，终端里用不到。
 
@@ -155,7 +142,7 @@ python3 scripts/asr_caption.py \
   --video your_video.mp4 --out-dir runs/demo --language zh
 
 # 第二步：字幕 → 知识文档 / HTML / 卡片 CSV
-# （首次运行会自动拉取文本模型 openbmb/minicpm5:Q4_K_M，几百 MB，稍等）
+# （首次运行会自动拉取文本模型 qwen3.5:4b，约 3.4 GB，稍等）
 python3 scripts/build_knowledge.py \
   --subtitles runs/demo/subtitles.json --out-dir runs/demo --format all
 
@@ -183,7 +170,7 @@ python3 scripts/mm_caption.py \
   --video slides.mp4 --out-dir runs/demo2 --mode dedup --prompt-ocr
 ```
 
-### 4. 路径 3 · 音画融合（有讲解的 PPT/幻灯片视频）
+### C. 路径 3 · 音画融合（有讲解的 PPT/幻灯片视频）
 
 最适合线上课程、培训录屏这类「**嘴在讲、屏上有表**」的视频。ASR 抓讲解，VLM 抓屏幕上的表格/公式/举例，按时间戳融合：
 
@@ -205,7 +192,22 @@ python3 scripts/build_knowledge.py \
 python3 scripts/gen_apkg.py --csv "$RUN/cards.csv" --out "$RUN/cards.apkg" --deck "幻灯片知识卡"
 ```
 
-默认文本模型为 **qwen2.5:3b**（8GB 机器实测能读懂融合内容、可推理字幕隐含逻辑）；低配/求快可 `--model openbmb/minicpm5:Q4_K_M`。详见 `references/path3-fusion.md`。
+默认文本模型为 **qwen3.5:4b**（统一视觉+文本，high 档机器上与路径 1 的 VLM 共用一次拉取）；低配/求快可 `--model openbmb/minicpm5:Q4_K_M`。详见 `references/path3-fusion.md`。
+
+### D. 图文笔记（关键帧插图 × 旁白要点）
+
+把去重关键帧和对应时间段的旁白交错排版，生成"可以当图文读"的笔记——手工课、操作演示、录屏都特别适合：
+
+```bash
+# 抽帧（感知去重）+ 已有字幕 → 图文笔记
+python3 scripts/extract_frames.py --video demo.mp4 --out-dir runs/demo/frames --mode dedup
+python3 scripts/build_notes.py \
+  --subtitles runs/demo/subtitles.json \
+  --frames runs/demo/frames/frames.json \
+  --out-dir runs/demo --max-frames 12 --describe-frames
+```
+
+每个节点：LLM 小标题 → 帧插图 → VLM 画面描述（`--describe-frames`）→ 旁白浓缩要点 → 原声节选。产出 `notes.md`（相对路径插图）和 `notes.html`（base64 自包含单文件，可直接发给别人）。
 
 ---
 
@@ -259,15 +261,17 @@ position of leading the...
 
 不用手动挑模型大小——`scripts/hardware_profile.py` 会检测并匹配：
 
-| Profile | 触发 | ASR 模型 | VLM | 典型机型 |
+| Profile | 触发 | ASR 模型 | VLM（2026-08 阵容） | 典型机型 |
 |---|---|---|---|---|
-| `tiny` | RAM < 6 GB | tiny | moondream | 树莓派 / 4G 老笔记本 |
-| `low` | 6–8 GB 无独显 | base | minicpm-v4.6 | 上网本 |
+| `tiny` | RAM < 6 GB | tiny | qwen3.5:0.8b (1.0 GB) | 树莓派 / 4G 老笔记本 |
+| `low` | 6–8 GB 无独显 | base | minicpm-v4.6 (1.6 GB) | 上网本 |
 | `low-mac` | 6–8 GB Apple Silicon | small | minicpm-v4.6 | M1 MacBook Air |
 | `mid` | 8–16 GB | small | minicpm-v4.6 | **主流笔记本** |
-| `high` | 16–32 GB | medium | qwen2.5vl:3b | M2/M3 Pro、16G PC |
-| `high-gpu` | NVIDIA ≥ 8 GB 显存 | large-v3 | qwen2.5vl:7b | RTX 3060/4060/3090（CUDA+float16 全速）|
-| `max` | RAM > 32 GB | large-v3 | qwen2.5vl:7b | 工作站 / 服务器 |
+| `high` | 16–32 GB | medium | qwen3.5:4b (3.4 GB) | M2/M3 Pro、16G PC |
+| `high-gpu` | NVIDIA ≥ 8 GB 显存 | large-v3 | qwen3.5:9b (6.6 GB) | RTX 3060/4060/3090（CUDA+float16 全速）|
+| `max` | RAM > 32 GB | large-v3 | qwen3.8:27b (18 GB) | 工作站 / 服务器 |
+
+模型阵容（2026-08 刷新）：**qwen3.5** 是当代唯一有完整小尺寸阶梯（0.8b/2b/4b/9b，统一视觉+文本，256K 上下文）的 Qwen 代际；**qwen3.8**（原生视频理解）只出 27b+，服务 `max` 档；**面壁 minicpm-v4.6**（1B 端侧效率王牌，CJK OCR 强）守 low/mid 档，**minicpm5**（688 MB）是低配文本模型覆写。旧选型（moondream / qwen2.5vl）已退役为 legacy。
 
 NVIDIA 有短路逻辑：≥8GB 显存直接走 CUDA，不受总内存限制。全部可用环境变量（`ASR_DEFAULT_MODEL=`、`VLM_MODEL=`）或 CLI flag 覆盖。完整说明见 [`references/hardware-profiles.md`](references/hardware-profiles.md)。
 
@@ -309,19 +313,15 @@ python3 scripts/build_knowledge.py \
 ## ❓ 常见问题（从零开始最容易踩的坑）
 
 <details>
-<summary><b>Q: 激活 venv 的命令到底是什么路径？</b></summary>
+<summary><b>Q: 用哪个 python 跑脚本？</b></summary>
 
-由 `setup_models.sh` 的 `VENV_DIR` 决定：
-- **仓库内**（方式 A，推荐）：跑 `VENV_DIR=.venv bash scripts/setup_models.sh`，之后 `source .venv/bin/activate`。
-- **固定路径**（方式 B，脚本默认）：`source ~/.zcode/skills/video2knowledge/.venv/bin/activate`。
-
-始终**以 `setup_models.sh` 末尾 `Activate with:` 打印的那行为准**。
+venv 固定建在仓库根 `.venv/`。最稳妥的方式是用 `setup_models.sh` 输出的 `run python as:` 绝对路径；或先激活（macOS/Linux `source .venv/bin/activate`，Windows Git Bash `source .venv/Scripts/activate`）再用 `python3`。
 </details>
 
 <details>
 <summary><b>Q: 跑 <code>build_knowledge.py</code> 卡很久 / 报模型找不到？</b></summary>
 
-第二步会调用一个**文本模型** `openbmb/minicpm5:Q4_K_M`（用于摘要/知识点/Q&A），首次运行时 Ollama 会自动拉取，几百 MB，需要联网和等待。提前手动拉可避免等待意外：`ollama pull openbmb/minicpm5:Q4_K_M`。想换更大的模型提升质量：`--model qwen2.5:7b`。
+第二步会调用**文本模型**（默认 `qwen3.5:4b`，约 3.4 GB，用于摘要/知识点/Q&A），首次运行时 Ollama 会自动拉取，需要联网和等待。提前手动拉可避免等待意外：`ollama pull qwen3.5:4b`。低配/求快换小模型：`--model openbmb/minicpm5:Q4_K_M`；想再提质：`--model qwen3.5:9b`。
 </details>
 
 <details>
@@ -339,7 +339,7 @@ python3 scripts/build_knowledge.py \
 <details>
 <summary><b>Q: Windows 上能跑吗？</b></summary>
 
-可以，建议在 **Git Bash** 或 **WSL** 里运行（脚本依赖 bash）。Ollama 用官方安装包，ffmpeg/python 用 `winget` 安装，venv 激活路径同样以 `setup_models.sh` 输出为准。
+可以，**Git Bash 原生支持**（v1.1 起全面适配：自动映射 `USERPROFILE`、识别 `Scripts/` venv 布局、拦截 MSYS/mingw python 陷阱），也可用 WSL。Ollama 用官方安装包，ffmpeg/python 用 `winget` 安装。
 </details>
 
 ---
@@ -360,17 +360,20 @@ python3 scripts/build_knowledge.py \
 video2knowledge/
 ├── SKILL.md                       # 主控文档（流程编排 + 留痕规范）
 ├── scripts/
-│   ├── hardware_profile.py        # 机型检测 → 配置档（单一真相源）
-│   ├── setup_models.sh            # 幂等：检测机型 + 拉模型 + 建 venv
+│   ├── hardware_profile.py        # 机型检测 → 配置档（单一真相源，跨平台探测链）
+│   ├── setup_models.sh            # 幂等：检测机型 + 拉模型 + 建 venv（macOS/Linux/Win Git Bash）
 │   ├── asr_caption.py             # 路径 2：faster-whisper → 字幕
 │   ├── mm_caption.py              # 路径 1：VLM 逐帧 → 字幕
-│   ├── extract_frames.py          # ffmpeg 抽帧 → frames.json
+│   ├── extract_frames.py          # ffmpeg 抽帧（interval/dedup 感知去重）→ frames.json
+│   ├── merge_visual.py            # 路径 3：ASR × VLM 按时间戳融合 → merged.json
 │   ├── build_knowledge.py         # 第二步：字幕 → 知识文档/HTML/CSV
+│   ├── build_notes.py             # 2.4：图文笔记（关键帧 × 旁白）→ notes.md/.html
 │   └── gen_apkg.py                # 2.3：CSV → Anki .apkg
 ├── references/                    # 详细文档（按需加载）
 │   ├── hardware-profiles.md
 │   ├── path1-multimodal.md
 │   ├── path2-asr.md
+│   ├── path3-fusion.md
 │   ├── templates.md
 │   └── outputs.md
 ├── assets/default-template.md     # 内置默认知识文档模板
@@ -384,7 +387,7 @@ video2knowledge/
 ## 🧠 设计取舍
 
 - **全本地推理**：用 Ollama 跑 VLM/文本模型、faster-whisper 跑 ASR，视频内容不离开本机，隐私可控、留痕可复现。
-- **小模型优先**：默认档位（mid）用 1B 级模型，8GB 机器跑得动；模型小→摘要/时间轴/知识点质量好，但 Q&A 在 1B 模型上偶有偏差。换更大的本地文本模型（`build_knowledge.py --model qwen2.5:7b`）即可显著改善。
+- **小模型优先，按档位自适应**：2026-08 阵容里 0.8b–4b 级模型覆盖 6–32GB 机器，8GB 机器跑得动；文本模型默认 qwen3.5:4b（统一视觉+文本，与路径 1 共用一次拉取）。Q&A 在过小模型上偶有偏差时，换 `--model qwen3.5:9b` 即可显著改善。
 - **CLI 优先，可被 skill 调用**：所有脚本带 `--help`、不硬编码路径、幂等。
 
 ---
