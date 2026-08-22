@@ -95,18 +95,38 @@ Outputs: `OUT/subtitles.{srt,vtt,json}`.
 
 ### Path 3 — Dual-path fusion (ASR × VLM)
 
-Run Path 2 then Path 1 (OCR), fuse, and build from the merged file:
+Run Path 2 then Path 1 (OCR), feed OCR terms back into ASR hotwords, fuse,
+and build from the merged file:
 
 ```bash
 # 1a. ASR
 python3 scripts/asr_caption.py --video VIDEO --out-dir OUT --language zh
 # 1b/1c. dedup frames + VLM OCR
 python3 scripts/mm_caption.py --video VIDEO --out-dir OUT --mode dedup --prompt-ocr
-# 2. fuse by timestamp
+# 1d. OCR terms -> hotwords + coverage check (re-run ASR with
+#     --hotwords @OUT/ocr_hotwords.txt when coverage is poor)
+python3 scripts/hotwords_from_ocr.py --captions OUT/captions.json \
+  --subtitles OUT/subtitles.json --out OUT/ocr_hotwords.txt
+# 2. fuse by timestamp + semantic alignment check
 python3 scripts/merge_visual.py --subtitles OUT/subtitles.json --visual OUT/captions.json --out OUT/merged.json
 # 3. build (Step 2 with --merged)
 python3 scripts/build_knowledge.py --subtitles OUT/subtitles.json --merged OUT/merged.json --out-dir OUT --format all
 ```
+
+The fusion loop has three cross-path pieces: (1) `hotwords_from_ocr.py`
+extracts on-screen terms (recurring CJK n-grams, slide titles, Latin
+acronyms — heuristic, no LLM) and reports which ones the ASR never heard,
+the likely mis-heard jargon; (2) `merge_visual.py` attaches visuals by
+timestamp, then conservatively re-binds a narration line to an ADJACENT slide
+when its word overlap with the timestamp-attached slide is near zero and the
+neighbour matches clearly better (speaker lag / timestamp drift), flagging
+uncertain cases as `weak` instead of guessing (`--no-semantic` restores pure
+timestamp matching); (3) `build_knowledge.py --merged` feeds the LLM
+interleaved audio+visual text with ⚠️ markers on swap/weak notes, and
+re-ranks map-reduced list fields in one global pass with the summary as
+context. In batches, `batch_run.py` accumulates OCR terms into
+`course_hotwords.txt` so later videos transcribe better, and `--asr-verify`
+re-transcribes a video whose OCR-term coverage fell below 50 %.
 The default text model is `qwen3.5:4b` (unified vision+text — on `high` machines
 the same pull serves Path 1 and Step 2; override with
 `--model openbmb/minicpm5:Q4_K_M` for low-RAM/fast runs).
@@ -233,8 +253,9 @@ EOF
 | `scripts/extract_frames.py` | Frame sampling: `--mode interval` (uniform fps) or `--mode dedup` (dense sample + dHash dedup with **settle-frame** selection, blank-frame gate, optional `--hash-mode dual` dHash+aHash, and cluster-stratified `--max-frames` budget) → `frames.json` |
 | `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}`; `--mode dedup --prompt-ocr` for slide tables/formulas, with an OCR text-change gate that drops frames whose text is ≥90% similar to the last kept one |
 | `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}`; `--hotwords` biases transcription via initial_prompt |
-| `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` (re-attach fallback keeps long-lived slides attached) |
-| `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv; `--merged` for dual-path fusion with `{{visual_timeline}}` section + map-reduce; `--format docx` / `--format pdf` for office/print |
+| `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` (re-attach fallback keeps long-lived slides attached; semantic alignment check swaps clearly-mismatched attachments to adjacent slides and flags weak ones) |
+| `scripts/hotwords_from_ocr.py` | Path 3 loop: extract salient terms from VLM OCR → `ocr_hotwords.txt` (+ accumulating `course_hotwords.txt`), check ASR coverage of those terms, exit 3 under `--fail-under` to trigger re-transcription |
+| `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv; `--merged` for dual-path fusion with `{{visual_timeline}}` section, ⚠️ swap/weak markers, map-reduce + global re-rank; `--format docx` / `--format pdf` for office/print |
 | `scripts/build_notes.py` | Step 2.4: illustrated notes (图文笔记): key frames × narration → notes.md + self-contained notes.html; `--docx` / `--pdf` for office/print |
 | `scripts/md_export.py` | Shared Markdown → DOCX/PDF exporter (python-docx + fpdf2, CJK font auto-detect, ffmpeg-JPEG normalize); standalone CLI for any pipeline .md |
 | `scripts/gen_apkg.py` | Step 2.3: cards.csv → Anki `.apkg` |

@@ -27,7 +27,7 @@
 
 - **路径 1 · 多模态**：原生多模态小模型（≤4B VLM，经 Ollama）逐帧读视频 → 带时间戳字幕。适合**无音轨 / 纯画面 / 屏幕录制 / 演示文稿**，能抓 ASR 看不见的屏幕文字和图表。
 - **路径 2 · ASR**：faster-whisper 转写音轨 → 带时间戳字幕。适合**有清晰语音的视频**（讲座/访谈/教程），更快更准。
-- **路径 3 · 音画融合**：ASR 抓讲解 + VLM OCR 抓屏幕（表格/公式/举例），按时间戳融合。适合**有语音讲解的 PPT/幻灯片视频**——把 ASR 听不到的画面内容补回来。
+- **路径 3 · 音画融合**：ASR 抓讲解 + VLM OCR 抓屏幕（表格/公式/举例），按时间戳融合，外加**跨路径反馈**——OCR 术语回灌 ASR 热词、语义对齐校正讲解/幻灯片错位。适合**有语音讲解的 PPT/幻灯片视频**——把 ASR 听不到的画面内容补回来。
 
 路径 1、2 产出的字幕 schema 一致，第二步（知识加工）对路径无感；路径 3 产出融合的 `merged.json`，由第二步的 `--merged` 消费。
 
@@ -184,10 +184,16 @@ python3 scripts/asr_caption.py --video slides.mp4 --out-dir "$RUN" --language zh
   --hotwords "亥姆霍兹自由能, 格林函数"
 # 1b/1c. 感知去重抽帧 + VLM OCR 抓屏幕
 python3 scripts/mm_caption.py --video slides.mp4 --out-dir "$RUN" --mode dedup --prompt-ocr
-# 2. 按时间戳融合
+# 1d. 跨路径反馈：从 OCR 提取屏幕术语 → 热词表，并检查哪些术语 ASR 没听到
+#     （覆盖率低 = ASR 听错了行话，用 --hotwords @"$RUN/ocr_hotwords.txt" 重跑 1a）
+python3 scripts/hotwords_from_ocr.py \
+  --captions "$RUN/captions.json" --subtitles "$RUN/subtitles.json" \
+  --out "$RUN/ocr_hotwords.txt"
+# 2. 按时间戳融合（+ 语义对齐校正：讲述与所附幻灯片零重叠而相邻页明显
+#    更匹配时保守换绑，其余错位只标记不猜测）
 python3 scripts/merge_visual.py \
   --subtitles "$RUN/subtitles.json" --visual "$RUN/captions.json" --out "$RUN/merged.json"
-# 3. 生成知识文档（带"画面要点"小节）
+# 3. 生成知识文档（带"画面要点"小节；换绑/弱归属以 ⚠️ 标注给模型）
 python3 scripts/build_knowledge.py \
   --subtitles "$RUN/subtitles.json" --merged "$RUN/merged.json" \
   --out-dir "$RUN" --format all
@@ -367,7 +373,8 @@ video2knowledge/
 │   ├── asr_caption.py             # 路径 2：faster-whisper → 字幕（--hotwords 术语偏置）
 │   ├── mm_caption.py              # 路径 1：VLM 逐帧 → 字幕（OCR 文本变化门控）
 │   ├── extract_frames.py          # ffmpeg 抽帧（interval/dedup：稳定帧选取+空白门控+dual 哈希+簇式预算）→ frames.json
-│   ├── merge_visual.py            # 路径 3：ASR × VLM 按时间戳融合 → merged.json（含 re-attach 回退）
+│   ├── merge_visual.py            # 路径 3：ASR × VLM 按时间戳融合 → merged.json（re-attach 回退 + 语义对齐校正/弱归属标记）
+│   ├── hotwords_from_ocr.py       # 路径 3 反馈：OCR 术语 → 热词表 + ASR 覆盖率检查（可触发重转写）
 │   ├── build_knowledge.py         # 第二步：字幕 → 知识文档/HTML/CSV（--format docx/pdf 可导 office）
 │   ├── build_notes.py             # 2.4：图文笔记（关键帧 × 旁白）→ notes.md/.html（--docx/--pdf）
 │   ├── md_export.py               # Markdown → DOCX/PDF 导出器（python-docx + fpdf2，CJK 字体自检）

@@ -23,6 +23,9 @@ VLM OCR on top. If the video has no slides, skip it (Path 2 alone is enough).
             ┌─ Path 2: video → ASR → subtitles.json ─────────┐
 video ──────┤                                              ├─→ merge_visual.py ─→ build_knowledge.py --merged
             └─ Path 1-OCR: video → dedup frames → VLM OCR → captions.json ┘
+                                  │
+                                  └─→ hotwords_from_ocr.py ─→ ocr_hotwords.txt / course_hotwords.txt
+                                       (OCR 术语回灌 ASR：跨路径反馈回路)
 ```
 
 ## Step 1a — ASR (same as Path 2)
@@ -80,7 +83,7 @@ carries new on-screen text and wasted VLM calls disappear (`--no-ocr-dedup` to
 disable, `--ocr-dedup-threshold` to tune). Output schema is the same
 `{start,end,text}` list as Path 1 captions.
 
-## Step 2 — Fuse by timestamp
+## Step 2 — Fuse by timestamp (with semantic alignment check)
 
 ```bash
 python3 scripts/merge_visual.py \
@@ -89,12 +92,55 @@ python3 scripts/merge_visual.py \
   --out run/merged.json
 ```
 
-Each ASR segment is annotated with the on-screen content at its moment. A visual
-frame attaches to **at most one consecutive run** of ASR segments so a large
-table is not repeated on every narration line; when no unused frame covers a
-moment, the used frame that covers it is re-attached (a slide that stays on
-screen keeps its table instead of going visually empty). Output: `merged.json`
-with `{start,end,text,visual}` per segment plus a `visual_blocks` reference list.
+Each ASR segment is first annotated by **timestamp**: the on-screen content
+whose window `[start-2, end]` covers the segment midpoint. A visual frame
+attaches to **at most one consecutive run** of ASR segments so a large table
+is not repeated on every narration line; when no unused frame covers a moment,
+the used frame that covers it is re-attached (a slide that stays on screen
+keeps its table instead of going visually empty).
+
+Then a conservative **semantic alignment check** (default on, `--no-semantic`
+to disable) catches speaker-lag: the narration discusses slide N while slide
+N+1 is already on screen (or ASR timestamps drifted). After the timestamp
+pick, word-level overlap between narration and slide text is scored (CJK
+bigrams + Latin words, function words dropped). When the attached slide
+shares (almost) nothing with the narration (`--weak-overlap`, default 0.06)
+while an **adjacent** slide (within `--swap-window`, default 90 s) matches
+clearly better (`--swap-margin`, default 0.15), the narration is re-bound to
+that neighbour (`"match": "semantic-swap"` + a note). When nothing matches at
+all, the attachment is kept but flagged `"weak"` — the speaker may just be
+elaborating verbally, so we flag instead of guessing. Timestamps stay the
+authority; the semantic pass only fixes obvious mismatches.
+
+Output: `merged.json` with `{start,end,text,visual,match,note}` per segment
+plus a `visual_blocks` reference list and `semantic_swaps` / `weak_attribution`
+counts (surfaced by `build_knowledge.py` and the batch logs).
+
+## Step 2b — OCR terms → ASR hotwords (cross-path feedback)
+
+The pipeline runs ASR *before* OCR, so the on-screen vocabulary cannot bias
+the initial transcription — exactly where jargon errors happen. Close the loop
+after OCR:
+
+```bash
+python3 scripts/hotwords_from_ocr.py \
+  --captions run/captions.json \
+  --subtitles run/subtitles.json \
+  --manual "术语一, 术语二" \
+  --course-vocab runs/batch/course_hotwords.txt \
+  --out run/ocr_hotwords.txt
+```
+
+- **Extract** salient on-screen terms from the OCR text — recurring CJK
+  n-grams, slide-title/table-header phrases, Latin acronyms (IFRS, FVOCI) —
+  pure heuristic, no LLM call.
+- **Check coverage**: which extracted terms never appear in the ASR text
+  (those are the likely mis-heard jargon). `--fail-under 0.5` exits 3 when
+  coverage drops below 50 % — the cue to re-run
+  `asr_caption.py --hotwords @run/ocr_hotwords.txt`.
+- **Accumulate**: with `--course-vocab`, terms are appended to a shared
+  vocabulary; in a batch (`batch_run.py`) stage A merges it into the hotwords
+  of later videos, so the loop pays off without re-running anything.
 
 ## Step 3 — Build the fused knowledge doc
 
@@ -106,11 +152,16 @@ python3 scripts/build_knowledge.py \
 ```
 
 In merged mode the LLM is fed **interleaved audio + visual** text
-(`[mm:ss] 🎙️narration / 🖼️slide-table`), and a `{{visual_timeline}}` section
-(tables/formulas/definitions per slide, deduped) is added to the knowledge doc.
-The raw-text cap is auto-raised (default 8000 → 20000) and `build_analysis` uses
-**map-reduce** over 4500-char chunks so small/mid models do not degrade on long
-inputs.
+(`[mm:ss] 🎙️narration / 🖼️slide-table`); swap/weak notes from the semantic
+check surface as `⚠️` markers so the model knows an attribution is corrected
+or uncertain. A `{{visual_timeline}}` section (tables/formulas/definitions per
+slide, deduped) is added to the knowledge doc. The raw-text cap is auto-raised
+(default 8000 → 20000) and `build_analysis` uses **map-reduce** over 4500-char
+chunks so small/mid models do not degrade on long inputs; each list field
+(timeline/key_points/qa/glossary) then gets one **global re-rank pass** with
+the overall summary as context, restoring cross-chunk order and merging
+chunk-boundary duplicates. QA items are deduped and capped as Q/A *pairs*
+(never orphaning an answer line).
 
 ## Text model sizing
 
@@ -134,10 +185,18 @@ mkdir -p "$RUN"
 python3 scripts/asr_caption.py --video ~/Movies/slides.mp4 --out-dir "$RUN" --language zh
 # 1b+1c dedup frames + VLM OCR
 python3 scripts/mm_caption.py --video ~/Movies/slides.mp4 --out-dir "$RUN" --mode dedup --prompt-ocr
-# 2 fuse
+# 1d OCR terms -> hotwords (coverage check; re-run ASR with @ocr_hotwords.txt
+#    when coverage is poor)
+python3 scripts/hotwords_from_ocr.py --captions "$RUN/captions.json" \
+    --subtitles "$RUN/subtitles.json" --out "$RUN/ocr_hotwords.txt"
+# 2 fuse (timestamp + semantic alignment)
 python3 scripts/merge_visual.py --subtitles "$RUN/subtitles.json" --visual "$RUN/captions.json" --out "$RUN/merged.json"
 # 3 knowledge doc / HTML / CSV
 python3 scripts/build_knowledge.py --subtitles "$RUN/subtitles.json" --merged "$RUN/merged.json" --out-dir "$RUN" --format all
 # Anki deck
 python3 scripts/gen_apkg.py --csv "$RUN/cards.csv" --out "$RUN/cards.apkg" --deck "幻灯片知识卡"
 ```
+
+For whole course libraries, `batch_run.py` wires this chain (including the
+OCR-hotwords loop and optional `--asr-verify` re-transcription) with resumable
+per-video run dirs — see its `--help`.
