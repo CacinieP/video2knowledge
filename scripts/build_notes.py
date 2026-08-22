@@ -42,6 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_knowledge import ask_llm, fmt_mmss, load_subtitles, ping  # noqa: E402
+from extract_frames import cap_by_time  # noqa: E402
 
 DESC_PROMPT = (
     "请用中文简要描述这一帧画面（不超过40字）：主体物品、人物动作、屏幕文字或"
@@ -224,7 +225,8 @@ def main() -> int:
                     help="frames.json from extract_frames.py")
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--max-frames", type=int, default=12,
-                    help="key-frame cap for the note (uniform downsample; default 12)")
+                    help="key-frame cap for the note (cluster-stratified: every "
+                         "change burst keeps its settled frame; default 12)")
     ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "qwen3.5:4b"),
                     help="Ollama text model for section titles/notes "
                          "(default qwen3.5:4b; unset behavior degrades gracefully)")
@@ -254,10 +256,11 @@ def main() -> int:
     if not frames:
         print(f"[err] no frames listed in {args.frames}", file=sys.stderr)
         return 2
-    # uniform downsample of the (already deduped) frames to the note's cap
-    if len(frames) > args.max_frames:
-        step = len(frames) / args.max_frames
-        frames = [frames[int(i * step)] for i in range(args.max_frames)]
+    # cluster-stratified cap (shared with extract_frames.py): every change
+    # burst keeps its settled final frame, remaining budget split proportionally
+    # — an animation burst no longer starves isolated key slides of sections
+    keep_ts = set(cap_by_time([fr["t"] for fr in frames], args.max_frames))
+    frames = [fr for fr in frames if fr["t"] in keep_ts]
 
     model = args.model if ping(args.host) else None
     vlm_model = None
