@@ -35,20 +35,31 @@ python3 scripts/asr_caption.py --video slides.mp4 --out-dir run --language zh
 ## Step 1b — Frame extraction with perceptual dedup
 
 The general-purpose sampling mode is `dedup`: it samples densely (default 1 fps),
-computes a 64-bit **dHash** per frame, and keeps only frames whose Hamming
-distance from the last kept frame exceeds a threshold. This drops the hundreds of
-visually-identical static-slide frames (a 25-min PPT video yields ~30 key frames,
-not ~750), bounding VLM cost — and it needs **no scene-detection threshold
-tuning** (ffmpeg's `select=gt(scene,T)` fails on fade animations and varies per
-video). Timestamps stay accurate because fps sampling is uniform.
+computes a **dHash** per frame (default 64-bit; `--hash-size 16` → 256-bit for
+small-but-important changes on dense slides; `--hash-mode dual` appends an aHash
+for flat/gradient content dHash cannot see), and keeps only frames whose Hamming
+distance from the last kept frame exceeds a threshold. A detected change is kept
+at the first **settled** frame — the one whose successor is nearly identical
+(`--settle-window`, default 2s) and which is not blank/black (mean-luma gate) —
+so fades and slide animations are captured in their final stable state. Over
+`--max-frames` (default 120), the budget is split by **change bursts**
+(cluster-stratified): every burst keeps its settled final frame and the rest is
+distributed proportionally, so an animation burst cannot starve isolated key
+slides. This drops the hundreds of visually-identical static-slide frames (a
+25-min PPT video yields ~30 key frames, not ~750), bounding VLM cost — and it
+needs **no scene-detection threshold tuning** (ffmpeg's `select=gt(scene,T)`
+fails on fade animations and varies per video). Timestamps stay accurate because
+fps sampling is uniform.
 
 ```bash
 python3 scripts/extract_frames.py --video slides.mp4 --out-dir run/frames --mode dedup
 # knobs: --dedup-fps 1.0  --dedup-hamming 10  --max-frames 120
+#        --hash-size 8  --hash-mode dhash|dual  --settle-window 2.0
+# dual mode: scale --dedup-hamming ~2x, e.g. 20 (2*n^2 bits)
 ```
 
-`dedup` uses only numpy (hand-written dHash over an ffmpeg PGM pipe) — no Pillow
-or other image dependency.
+`dedup` uses only numpy (hand-written dHash/aHash over an ffmpeg PGM pipe) — no
+Pillow or other image dependency.
 
 ## Step 1c — VLM OCR captioning
 
@@ -62,7 +73,12 @@ python3 scripts/mm_caption.py \
 full-fidelity transcription prompt that preserves Markdown tables and newlines,
 and raises `num_predict` so whole tables are not truncated. The prompt is written
 to avoid the small-VLM failure mode of echoing the instruction menu back as
-content. Output schema is the same `{start,end,text}` list as Path 1 captions.
+content. An **OCR text-change gate** then drops any frame whose OCR text is ≥90%
+similar to the last kept frame's (visual change without knowledge change —
+cursor blinks, partial redraws, animation noise), so every emitted caption
+carries new on-screen text and wasted VLM calls disappear (`--no-ocr-dedup` to
+disable, `--ocr-dedup-threshold` to tune). Output schema is the same
+`{start,end,text}` list as Path 1 captions.
 
 ## Step 2 — Fuse by timestamp
 
@@ -74,9 +90,11 @@ python3 scripts/merge_visual.py \
 ```
 
 Each ASR segment is annotated with the on-screen content at its moment. A visual
-frame attaches to **at most one** ASR segment so a large table is not repeated on
-every narration line. Output: `merged.json` with `{start,end,text,visual}` per
-segment plus a `visual_blocks` reference list.
+frame attaches to **at most one consecutive run** of ASR segments so a large
+table is not repeated on every narration line; when no unused frame covers a
+moment, the used frame that covers it is re-attached (a slide that stays on
+screen keeps its table instead of going visually empty). Output: `merged.json`
+with `{start,end,text,visual}` per segment plus a `visual_blocks` reference list.
 
 ## Step 3 — Build the fused knowledge doc
 

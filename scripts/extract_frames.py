@@ -90,7 +90,7 @@ def _ahash_bits(pix: np.ndarray) -> np.ndarray:
     gradients: every row comparison has the same sign -> flat hash at ANY
     size). aHash sees overall brightness structure, so it catches exactly the
     content dHash misses. In dual mode both are concatenated; thresholds are
-    then over 2*n^2 bits, so scale --dedup-hamming ~2.5x (e.g. 25 for n=8).
+    then over 2*n^2 bits, so scale --dedup-hamming ~2x (e.g. 20 for n=8).
     """
     block = pix[:, :-1]
     return (block > block.mean()).ravel()
@@ -370,7 +370,7 @@ def main() -> int:
                     help="dhash: gradient hash only (default). dual: dHash+aHash "
                          "concatenated (2*n^2 bits) — use when dHash misses "
                          "changes on flat/gradient content; scale --dedup-hamming "
-                         "~2.5x in dual mode (e.g. 25 for n=8).")
+                         "~2x in dual mode (e.g. 20 for n=8).")
     ap.add_argument("--settle-window", type=float, default=2.0,
                     help="seconds to wait for a changed frame to settle before "
                          "keeping it (default 2.0; transitions longer than this "

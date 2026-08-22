@@ -88,7 +88,8 @@ python3 scripts/mm_caption.py \
 ```bash
 python3 scripts/asr_caption.py \
   --video VIDEO --out-dir OUT \
-  --model small --language zh
+  --model small --language zh \
+  --hotwords "术语一, 术语二"   # optional jargon biasing via initial_prompt
 ```
 Outputs: `OUT/subtitles.{srt,vtt,json}`.
 
@@ -227,10 +228,10 @@ EOF
 |---|---|
 | `scripts/setup_models.sh` | Idempotent model/venv setup (profile-aware) |
 | `scripts/hardware_profile.py` | Detect machine → recommend ASR/VLM/backend profile |
-| `scripts/extract_frames.py` | Frame sampling: `--mode interval` (uniform fps) or `--mode dedup` (dense sample + dHash perceptual dedup, general-purpose for slides) → `frames.json` |
-| `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}`; `--mode dedup --prompt-ocr` for slide tables/formulas |
-| `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}` |
-| `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` |
+| `scripts/extract_frames.py` | Frame sampling: `--mode interval` (uniform fps) or `--mode dedup` (dense sample + dHash dedup with **settle-frame** selection, blank-frame gate, optional `--hash-mode dual` dHash+aHash, and cluster-stratified `--max-frames` budget) → `frames.json` |
+| `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}`; `--mode dedup --prompt-ocr` for slide tables/formulas, with an OCR text-change gate that drops frames whose text is ≥90% similar to the last kept one |
+| `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}`; `--hotwords` biases transcription via initial_prompt |
+| `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` (re-attach fallback keeps long-lived slides attached) |
 | `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv; `--merged` for dual-path fusion with `{{visual_timeline}}` section + map-reduce |
 | `scripts/build_notes.py` | Step 2.4: illustrated notes (图文笔记): key frames × narration → notes.md + self-contained notes.html |
 | `scripts/gen_apkg.py` | Step 2.3: cards.csv → Anki `.apkg` |

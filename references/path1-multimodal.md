@@ -66,6 +66,19 @@ For dense content use `--fps 1` (1 frame/sec) instead of `--interval`. Frame
 timestamps in `frames.json` are derived from the video's true duration (even
 spacing), not from `index × interval`, so they stay accurate.
 
+### dedup mode (slide/screencast videos)
+
+`--mode dedup` replaces fixed intervals with perceptual dedup: dense sampling
+(default `--dedup-fps 1`) + dHash, keeping a frame only when it visibly changed.
+A change is kept at its first **settled** frame (successor nearly identical,
+`--settle-window` default 2s, plus a blank/black mean-luma gate), so fades land
+on the final stable slide, not mid-transition. Knobs: `--dedup-hamming` (default
+10 of 64 bits), `--hash-size` (8 → 64-bit, 16 → 256-bit for dense slides),
+`--hash-mode dual` (dHash+aHash for flat/gradient content dHash cannot see —
+scale the threshold ~2x), and `--max-frames` (default 120, cluster-stratified
+budget: every change burst keeps its settled final frame). See
+`references/path3-fusion.md` for the full story.
+
 ## Prompt
 
 The caption prompt (in `mm_caption.py`) asks the model for **≤40-char Chinese

@@ -57,6 +57,19 @@ Override per-run with `--device` and `--compute-type`.
 - `--language en`, `--language ja`, …: any Whisper language code.
 - `--language auto`: auto-detect (slightly slower, can misfire on code-switching).
 
+## Hotwords (jargon biasing)
+
+`--hotwords` conditions transcription via faster-whisper's `initial_prompt` —
+the single cheapest accuracy win for jargon-heavy lectures (person names,
+formula symbols, product ids). Accepts comma/space/`、`-separated terms or a
+file (`@terms.txt`, one per line):
+
+```bash
+python3 scripts/asr_caption.py --video lecture.mp4 --out-dir run \
+  --language zh --hotwords "亥姆霍兹自由能, 格林函数, CTranslate2"
+# or: --hotwords @terms.txt
+```
+
 ## VAD filter
 
 `vad_filter=True` is hardcoded — it trims silence, which dramatically improves

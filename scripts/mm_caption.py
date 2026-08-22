@@ -172,7 +172,7 @@ def main() -> int:
                     help="dHash size n -> n*n bits (default 8 = 64 bits)")
     ap.add_argument("--hash-mode", choices=["dhash", "dual"], default="dhash",
                     help="dual = dHash+aHash for flat/gradient content dHash "
-                         "cannot see (scale --dedup-hamming ~2.5x)")
+                         "cannot see (scale --dedup-hamming ~2x)")
     ap.add_argument("--max-frames", type=int, default=120,
                     help="frame cap in dedup mode (default 120)")
     ap.add_argument("--prompt-ocr", action="store_true",

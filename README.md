@@ -163,11 +163,12 @@ python3 scripts/mm_caption.py \
 # 再走同样的第二步（build_knowledge.py），输出与路径 2 完全一致
 ```
 
-对 PPT/幻灯片视频，用 `--mode dedup`（通用感知去重，无需调场景阈值）+ `--prompt-ocr`（表格/公式全量转写）：
+对 PPT/幻灯片视频，用 `--mode dedup`（通用感知去重：密采样 + dHash、稳定帧选取、黑帧过滤、簇式帧预算，无需调场景阈值）+ `--prompt-ocr`（表格/公式全量转写，自带 OCR 文本变化门控——画面变了但文字没变的帧会被丢弃）：
 
 ```bash
 python3 scripts/mm_caption.py \
   --video slides.mp4 --out-dir runs/demo2 --mode dedup --prompt-ocr
+# 可选：--hash-mode dual 抓纯色/渐变类画面变化（阈值约×2，如 20）；--hash-size 16 提高密集幻灯片灵敏度
 ```
 
 ### C. 路径 3 · 音画融合（有讲解的 PPT/幻灯片视频）
@@ -178,8 +179,9 @@ python3 scripts/mm_caption.py \
 source .venv/bin/activate
 RUN=runs/$(date +%Y%m%d-%HMMSS)-slides; mkdir -p "$RUN"
 
-# 1a. ASR 抓讲解
-python3 scripts/asr_caption.py --video slides.mp4 --out-dir "$RUN" --language zh
+# 1a. ASR 抓讲解（--hotwords 可注入领域术语，显著减少专有名词转写错误）
+python3 scripts/asr_caption.py --video slides.mp4 --out-dir "$RUN" --language zh \
+  --hotwords "亥姆霍兹自由能, 格林函数"
 # 1b/1c. 感知去重抽帧 + VLM OCR 抓屏幕
 python3 scripts/mm_caption.py --video slides.mp4 --out-dir "$RUN" --mode dedup --prompt-ocr
 # 2. 按时间戳融合
@@ -362,10 +364,10 @@ video2knowledge/
 ├── scripts/
 │   ├── hardware_profile.py        # 机型检测 → 配置档（单一真相源，跨平台探测链）
 │   ├── setup_models.sh            # 幂等：检测机型 + 拉模型 + 建 venv（macOS/Linux/Win Git Bash）
-│   ├── asr_caption.py             # 路径 2：faster-whisper → 字幕
-│   ├── mm_caption.py              # 路径 1：VLM 逐帧 → 字幕
-│   ├── extract_frames.py          # ffmpeg 抽帧（interval/dedup 感知去重）→ frames.json
-│   ├── merge_visual.py            # 路径 3：ASR × VLM 按时间戳融合 → merged.json
+│   ├── asr_caption.py             # 路径 2：faster-whisper → 字幕（--hotwords 术语偏置）
+│   ├── mm_caption.py              # 路径 1：VLM 逐帧 → 字幕（OCR 文本变化门控）
+│   ├── extract_frames.py          # ffmpeg 抽帧（interval/dedup：稳定帧选取+空白门控+dual 哈希+簇式预算）→ frames.json
+│   ├── merge_visual.py            # 路径 3：ASR × VLM 按时间戳融合 → merged.json（含 re-attach 回退）
 │   ├── build_knowledge.py         # 第二步：字幕 → 知识文档/HTML/CSV
 │   ├── build_notes.py             # 2.4：图文笔记（关键帧 × 旁白）→ notes.md/.html
 │   └── gen_apkg.py                # 2.3：CSV → Anki .apkg
