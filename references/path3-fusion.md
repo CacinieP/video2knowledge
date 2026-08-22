@@ -96,10 +96,12 @@ inputs.
 
 ## Text model sizing
 
-The default text model is **`qwen2.5:3b`**. On an 8 GB machine a 1B model degrades
-badly on the ~20k-char fused context (repeated output, dropped items); 3B reads
-the content and reasons about it. 3B loads in ~3.3 GB, leaving headroom on 8 GB.
-For low-RAM machines, override with `--model openbmb/minicpm5:Q4_K_M` (faster but
+The default text model is **`qwen3.5:4b`** (unified vision+text — on `high`
+machines the same pull serves Path 1). On an 8 GB machine a 1B model degrades
+badly on the ~20k-char fused context (repeated output, dropped items); a 3–4B
+reads the content and reasons about it. `qwen3.5:4b` loads in ~3.4 GB, leaving
+headroom on 16 GB; use `qwen3.5:2b` (~2.7 GB) for 8 GB machines. For low-RAM
+runs, override with `--model openbmb/minicpm5:Q4_K_M` (faster but
 shallower). The map-reduce chunking keeps each call small enough that even 1B
 stays usable on short videos.
 

@@ -20,17 +20,18 @@ The default VLM is **picked by your hardware profile** (`scripts/hardware_profil
 
 | Profile | VLM | Size |
 |---|---|---|
-| `tiny` (RAM < 6 GB) | `moondream` | ~1.6 GB |
+| `tiny` (RAM < 6 GB) | `qwen3.5:0.8b` | ~1.0 GB |
 | `low` / `low-mac` / `mid` (6–16 GB) | `openbmb/minicpm-v4.6:latest` | 1.6 GB |
-| `high` (16–32 GB) | `qwen2.5vl:3b` | ~2 GB |
-| `high-gpu` / `max` | `qwen2.5vl:7b` | ~4.5 GB |
+| `high` (16–32 GB) | `qwen3.5:4b` | ~3.4 GB |
+| `high-gpu` / `max` | `qwen3.5:9b` / `qwen3.8:27b` | 6.6 GB / 18 GB |
 
 On the most common machines (8–16 GB) this resolves to `minicpm-v4.6`, which is
 the tested default. Override with `--model` or `VLM_MODEL=`. Full profile table
 in `references/hardware-profiles.md`.
 
 Other VLMs that work the same way (via `ollama pull`):
-`moondream` (very fast, terse), `qwen2.5vl:3b` (strong OCR / on-screen text).
+`qwen3.5` 2b/4b (unified text+vision, strong OCR / on-screen text, 256K ctx),
+`minicpm-v4.5` (8B GPT-4o-class), `moondream` (very fast, terse, legacy).
 
 ## Ollama vision API
 

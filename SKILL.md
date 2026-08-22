@@ -38,8 +38,8 @@ recommended VLM, creates a venv at `.venv/`, and installs `faster-whisper` +
 python3 scripts/hardware_profile.py
 ```
 
-Profiles range from `tiny` (4 GB machines → whisper-tiny + moondream) through
-`high-gpu` (NVIDIA ≥8 GB → whisper-large-v3 + qwen2.5vl:7b on CUDA). Full table
+Profiles range from `tiny` (4 GB machines → whisper-tiny + qwen3.5:0.8b) through
+`high-gpu` (NVIDIA ≥8 GB → whisper-large-v3 + qwen3.5:9b on CUDA). Full table
 and tuning in `references/hardware-profiles.md`. Override any choice with env
 vars (`VLM_MODEL=`, `ASR_DEFAULT_MODEL=`, ...) or CLI flags.
 
@@ -106,7 +106,8 @@ python3 scripts/merge_visual.py --subtitles OUT/subtitles.json --visual OUT/capt
 # 3. build (Step 2 with --merged)
 python3 scripts/build_knowledge.py --subtitles OUT/subtitles.json --merged OUT/merged.json --out-dir OUT --format all
 ```
-The default text model is `qwen2.5:3b` (reads fused content well; override with
+The default text model is `qwen3.5:4b` (unified vision+text — on `high` machines
+the same pull serves Path 1 and Step 2; override with
 `--model openbmb/minicpm5:Q4_K_M` for low-RAM/fast runs).
 
 ## Refine into Knowledge Artifacts (Step 2)

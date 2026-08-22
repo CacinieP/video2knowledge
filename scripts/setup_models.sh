@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # setup_models.sh — idempotent check/download of models for video2knowledge
 #
-# Path 1 (multimodal): ollama pulls openbmb/minicpm-v4.6 (<=4B native VLM)
+# Path 1 (multimodal): ollama pulls the profile-picked VLM (2026-08 lineup:
+#                      qwen3.5 0.8b/4b/9b, minicpm-v4.6 on low/mid, qwen3.8:27b on max)
 # Path 2 (ASR):        faster-whisper installed into a local venv; model weights
 #                      auto-download on first transcription to ~/.cache/huggingface
 #

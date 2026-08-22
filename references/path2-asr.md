@@ -32,6 +32,13 @@ you understand what the profile picker chose; see
 `asr_caption.py` **warns** (but does not block) if you force a heavy model on a
 low-RAM profile. Override explicitly with `--model`.
 
+**2026-08 note:** the whisper ladder still fits faster-whisper (CTranslate2).
+`--model turbo` (large-v3-turbo, 809M) is the speed/accuracy sweet spot when
+`large-v3` is too slow on your GPU — near-large quality at several times the
+speed. Newer leaderboard models (NVIDIA Canary-Qwen 2.5B, Mistral Voxtral,
+FireRedASR for Mandarin) need different inference stacks, so they are not
+wired in as defaults.
+
 ## Device & compute type
 
 These come from the hardware profile. The defaults by profile:

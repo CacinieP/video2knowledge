@@ -533,8 +533,9 @@ def main() -> int:
     ap.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE,
                     help="knowledge-doc template (default assets/default-template.md)")
     ap.add_argument("--format", choices=["knowledge", "html", "csv", "all"], default="all")
-    ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "qwen2.5:3b"),
-                    help="Ollama text model for summarization/QA (default qwen2.5:3b; "
+    ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "qwen3.5:4b"),
+                    help="Ollama text model for summarization/QA (default qwen3.5:4b, "
+                         "unified vision+text so it can share the Path-1 VLM pull; "
                          "set V2K_TEXT_MODEL or pass --model openbmb/minicpm5:Q4_K_M "
                          "for faster/low-RAM runs)")
     ap.add_argument("--title", default=None, help="document title (default: video basename)")

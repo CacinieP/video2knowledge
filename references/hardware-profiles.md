@@ -31,13 +31,36 @@ python3 scripts/asr_caption.py --video v.mp4 --out-dir o --model large-v3 --devi
 
 | Profile | Trigger | ASR model | compute | device | VLM | Notes |
 |---|---|---|---|---|---|---|
-| `tiny` | RAM < 6 GB | `tiny` | int8 | cpu | `moondream` (~1.6 GB) | 老设备/上网本，仅保证能跑，字幕较粗 |
+| `tiny` | RAM < 6 GB | `tiny` | int8 | cpu | `qwen3.5:0.8b` (~1.0 GB) | 老设备/上网本，仅保证能跑，字幕较粗 |
 | `low` | 6–8 GB, no dGPU | `base` | int8 | cpu | `minicpm-v4.6` | 通用低配 |
 | `low-mac` | 6–8 GB, Apple Silicon | `small` | int8 | cpu | `minicpm-v4.6` | M1/A 系列芯片，Metal 加速抽帧 |
 | `mid` | 8–16 GB | `small` | int8 | cpu | `minicpm-v4.6` | **主流笔记本**（含 8GB MacBook） |
-| `high` | 16–32 GB | `medium` | int8_float16 | auto | `qwen2.5vl:3b` | 16G+，可上 medium |
-| `high-gpu` | NVIDIA ≥ 8 GB VRAM | `large-v3` | float16 | **cuda** | `qwen2.5vl:7b` | 独显直通，CUDA 全速 |
-| `max` | RAM > 32 GB | `large-v3` | float16 | auto | `qwen2.5vl:7b` | 工作站/服务器 |
+| `high` | 16–32 GB | `medium` | int8_float16 | auto | `qwen3.5:4b` | 16G+，可上 medium |
+| `high-gpu` | NVIDIA ≥ 8 GB VRAM | `large-v3` | float16 | **cuda** | `qwen3.5:9b` | 独显直通，CUDA 全速 |
+| `max` | RAM > 32 GB | `large-v3` | float16 | auto | `qwen3.8:27b` | 工作站/服务器 |
+
+### Model lineup (refreshed 2026-08)
+
+- **qwen3.5** (Alibaba, ~Feb 2026): the only current Qwen generation with the
+  full small-size ladder — 0.8b (1.0 GB) / 2b (2.7 GB) / 4b (3.4 GB) / 9b
+  (6.6 GB) — unified text+vision (early fusion), 256K context. One pull serves
+  both Path 1 (VLM) and Step 2 (text) on `high`+ machines.
+- **qwen3.6** (~Apr 2026) / **qwen3.8** (~Aug 2026): ship 27b+ only (17–18 GB);
+  qwen3.8 adds native image/video understanding (incl. hour-scale videos), so
+  it is the `max`-tier pick. For a more battle-tested 27b, `qwen3.6:27b` works
+  too.
+- **ModelBest end-side models** (openbmb): `minicpm-v4.6` (1B, 1.6 GB,
+  ultra-efficient image/video understanding, strong CJK OCR) holds the
+  low/mid tiers; `minicpm5` (688 MB Q4) is the low-RAM text-model override.
+  `minicpm-v4.5`/`minicpm-o4.5` (8B, GPT-4o-class omni) are solid
+  alternatives where a 6 GB-class download fits.
+- Legacy picks (`moondream`, `qwen2.5vl:3b/7b`) still work if already pulled,
+  but new machines should use the lineup above.
+- ASR: the whisper ladder (tiny→large-v3) is unchanged — faster-whisper
+  (CTranslate2) remains the engine, and the 2026 leaderboard newcomers
+  (Canary-Qwen 2.5B, Voxtral, FireRedASR) run on different inference stacks.
+  `--model turbo` (large-v3-turbo, 809M) is the speed/accuracy sweet spot on
+  GPUs where `large-v3` is too slow.
 
 **NVIDIA short-circuit:** any machine with a CUDA GPU reporting ≥ 8 GB VRAM is
 forced to `high-gpu` regardless of total RAM — CUDA + float16 always beats CPU,
@@ -61,26 +84,55 @@ macOS. On Linux/NVIDIA, `device=cuda, compute=float16` gives a large speedup.
 
 ## Detection details
 
-- **RAM**: `sysctl hw.memsize` (macOS) / `/proc/meminfo` (Linux) /
-  `wmic ComputerSystem` (Windows).
-- **Apple Silicon chip**: `system_profiler SPHardwareDataType`.
-- **NVIDIA VRAM**: `nvidia-smi --query-gpu=memory.total`.
+All probes are best-effort with layered per-OS fallbacks; detection never
+blocks the pipeline — if every layer fails, `mid` (small/int8/cpu/
+minicpm-v4.6) is the safe fallback.
 
-Detection is best-effort and never blocks the pipeline — if anything fails,
-`mid` (small/int8/cpu/minicpm-v4.6) is the safe fallback.
+### RAM detection chain (per OS / version)
+
+| OS / version | Primary | Fallback 1 | Fallback 2 |
+|---|---|---|---|
+| macOS (any) | `sysctl -n hw.memsize` | — | — |
+| Linux (any) | `/proc/meminfo` `MemTotal:` | `sysconf(_SC_PHYS_PAGES × _SC_PAGE_SIZE)` (POSIX) | — |
+| Windows 2000+ (all, incl. Win11 24H2+) | ctypes `GlobalMemoryStatusEx` (native kernel32, no subprocess) | `wmic ComputerSystem get TotalPhysicalMemory` (XP–Win11 23H2; **removed in Win11 24H2 / Server 2025**) | PowerShell `Get-CimInstance Win32_ComputerSystem` (Win8+) |
+
+**Why the ctypes probe is primary on Windows:** older versions of this skill
+called `wmic` directly. On Win11 24H2+ `wmic.exe` no longer exists, so the RAM
+probe silently returned 0 and every such machine fell to the `tiny` profile
+(tiny ASR + moondream VLM) regardless of its actual 16–32 GB. The native
+`GlobalMemoryStatusEx` API works on every Windows since 2000 and needs no
+subprocess, so it is now the first probe on all versions; `wmic` and PowerShell
+CIM remain as fallbacks for exotic cases.
+
+### NVIDIA VRAM detection chain
+
+| Environment | Primary | Fallback |
+|---|---|---|
+| Any OS, NVIDIA driver + `nvidia-smi` on PATH | `nvidia-smi --query-gpu=memory.total` | — |
+| Windows, `nvidia-smi` missing / not on PATH | registry `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-…}\00NN` → `DriverDesc` mentions NVIDIA → `HardwareInformation.qwMemorySize` (bytes) | sanity clamp 0.3–128 GB; invalid values return None (never mis-trigger `high-gpu`) |
+
+Non-NVIDIA dGPUs (Intel Arc, AMD) are intentionally **not** probed: CTranslate2
+(faster-whisper) only accelerates via CUDA, so they cannot change the profile —
+ASR stays on CPU and Ollama uses whatever backend it was built with.
+
+### Other probes
+
+- **OS version**: `platform.release()` (reported as `os_release`, e.g. `11` on
+  Win11, `24.04` on Ubuntu) — useful when diagnosing which probe chain ran.
+- **Apple Silicon chip**: `system_profiler SPHardwareDataType`.
 
 ## Common machines → expected profile
 
 | Machine | Profile | ASR | VLM |
 |---|---|---|---|
-| 4 GB old laptop / Raspberry Pi 4 | `tiny` | tiny | moondream |
+| 4 GB old laptop / Raspberry Pi 4 | `tiny` | tiny | qwen3.5:0.8b |
 | 8 GB Intel MacBook / ThinkPad | `mid` | small | minicpm-v4.6 |
 | 8 GB M1 / M2 MacBook Air | `mid` | small | minicpm-v4.6 |
 | 8 GB iPhone-class (A18 Pro) Mac | `mid` | small | minicpm-v4.6 |
-| 16 GB M2/M3 Pro, 16 GB PC | `high` | medium | qwen2.5vl:3b |
-| 24–32 GB M-Max / workstation | `max` | large-v3 | qwen2.5vl:7b |
-| Any + RTX 3060/4060 (8 GB) | `high-gpu` | large-v3 | qwen2.5vl:7b |
-| Any + RTX 3090/4090 (24 GB) | `high-gpu` | large-v3 | qwen2.5vl:7b |
+| 16 GB M2/M3 Pro, 16 GB PC | `high` | medium | qwen3.5:4b |
+| 24–32 GB M-Max / workstation | `max` | large-v3 | qwen3.8:27b |
+| Any + RTX 3060/4060 (8 GB) | `high-gpu` | large-v3 | qwen3.5:9b |
+| Any + RTX 3090/4090 (24 GB) | `high-gpu` | large-v3 | qwen3.5:9b |
 
 ## Tuning the profiles
 
