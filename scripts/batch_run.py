@@ -61,8 +61,9 @@ def venv_python() -> str:
 
 def sanitize(rel: str) -> str:
     """Filesystem-safe run-dir name that keeps CJK readable."""
-    s = rel.replace("\\", "/")
-    s = re.sub(r"[/:*?\"<>|\s]+", "_", s)
+    p = Path(rel.replace("\\", "/"))
+    s = str(p.with_suffix(""))  # drop the video extension
+    s = re.sub(r"[/:*?\"<>|\s.]+", "_", s)
     return re.sub(r"_+", "_", s).strip("_")[:120]
 
 
