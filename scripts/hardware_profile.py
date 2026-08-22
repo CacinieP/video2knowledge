@@ -21,7 +21,10 @@ video understanding, strong CJK OCR) and minicpm5 (text, 688 MB Q4).
   low       6–8 GB     none/integrated base        int8         minicpm-v4.6 (1.6 GB)
   low-mac   6–8 GB     Apple Silicon  small       int8         minicpm-v4.6 (1.6 GB)
   mid       8–16 GB    any            small       int8         minicpm-v4.6 (1.6 GB)
-  high      16–32 GB   any            medium      int8_float16 qwen3.5:4b (3.4 GB)
+  high      16–32 GB   any            medium      int8*        qwen3.5:4b (3.4 GB)
+
+  * int8_float16 when CUDA is present, auto-downgraded to int8 on CPU-only
+    machines (CTranslate2's CPU backend rejects int8_float16 at load).
   high-gpu  >= 8 GB    NVIDIA >=8GB    large-v3    float16      qwen3.5:9b (6.6 GB)
   max       > 32 GB    any            large-v3    float16      qwen3.8:27b (18 GB)
 
@@ -244,6 +247,12 @@ def detect() -> dict:
     apple = detect_apple_silicon()
     pname = select_profile(ram, nvidia_vram=nvidia, apple_chip=apple)
     prof = PROFILES[pname]
+    compute = prof["compute"]
+    # int8_float16 is a CUDA-only compute type: CTranslate2's CPU backend raises
+    # "target device or backend do not support efficient int8_float16" at load.
+    # Downgrade to plain int8 when no NVIDIA GPU is present.
+    if compute == "int8_float16" and nvidia is None:
+        compute = "int8"
     return {
         "os": detect_os(),
         "os_release": platform.release(),  # e.g. 11 (Win11), 24.04 (Ubuntu)
@@ -253,7 +262,7 @@ def detect() -> dict:
         "nvidia_vram_gb": round(nvidia, 1) if nvidia else None,
         "profile": pname,
         "asr_model": prof["asr"],
-        "compute_type": prof["compute"],
+        "compute_type": compute,
         "device": prof["device"],
         "vlm_model": prof["vlm"],
         "note": prof["note"],

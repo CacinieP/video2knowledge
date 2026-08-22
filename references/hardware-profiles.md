@@ -35,7 +35,7 @@ python3 scripts/asr_caption.py --video v.mp4 --out-dir o --model large-v3 --devi
 | `low` | 6–8 GB, no dGPU | `base` | int8 | cpu | `minicpm-v4.6` | 通用低配 |
 | `low-mac` | 6–8 GB, Apple Silicon | `small` | int8 | cpu | `minicpm-v4.6` | M1/A 系列芯片，Metal 加速抽帧 |
 | `mid` | 8–16 GB | `small` | int8 | cpu | `minicpm-v4.6` | **主流笔记本**（含 8GB MacBook） |
-| `high` | 16–32 GB | `medium` | int8_float16 | auto | `qwen3.5:4b` | 16G+，可上 medium |
+| `high` | 16–32 GB | `medium` | int8_float16 (int8 on CPU-only¹) | auto | `qwen3.5:4b` | 16G+，可上 medium |
 | `high-gpu` | NVIDIA ≥ 8 GB VRAM | `large-v3` | float16 | **cuda** | `qwen3.5:9b` | 独显直通，CUDA 全速 |
 | `max` | RAM > 32 GB | `large-v3` | float16 | auto | `qwen3.8:27b` | 工作站/服务器 |
 
@@ -65,6 +65,11 @@ python3 scripts/asr_caption.py --video v.mp4 --out-dir o --model large-v3 --devi
 **NVIDIA short-circuit:** any machine with a CUDA GPU reporting ≥ 8 GB VRAM is
 forced to `high-gpu` regardless of total RAM — CUDA + float16 always beats CPU,
 and `large-v3` fits in 8 GB VRAM.
+
+¹ `int8_float16` is CUDA-only: CTranslate2's CPU backend raises
+"target device or backend do not support efficient int8_float16" at model load.
+`hardware_profile.py` auto-downgrades it to `int8` when no NVIDIA GPU is
+detected, so the `high` profile works on CPU-only 16–32 GB machines.
 
 ## ASR model sizing rationale
 
