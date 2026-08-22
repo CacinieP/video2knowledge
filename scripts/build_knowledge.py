@@ -159,7 +159,7 @@ def build_visual_timeline(blocks: list[dict], host: str, model: str | None,
 
 # --- Ollama summarization ----------------------------------------------------
 
-def http_json(url: str, payload: dict, timeout: int = 180) -> dict:
+def http_json(url: str, payload: dict, timeout: int = 1800) -> dict:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
@@ -183,7 +183,7 @@ def ask_llm(host: str, model: str, prompt: str) -> str | None:
         r = http_json(f"{host}/api/generate",
                       {"model": model, "prompt": prompt, "stream": False,
                        "think": False,
-                       "options": {"temperature": 0.3}})
+                       "options": {"temperature": 0.3, "num_ctx": 16384}})
         return r.get("response", "").strip()
     except (urllib.error.URLError, OSError):
         return None
