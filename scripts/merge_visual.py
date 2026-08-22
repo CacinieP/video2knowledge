@@ -17,10 +17,13 @@ Output schema (merged.json):
   }
 
 Alignment rule: for each ASR segment, attach the visual caption whose time window
-[vc.start-2, vc.end] covers the segment midpoint (±tolerance seconds). A visual
-caption is attached to AT MOST ONE consecutive run of ASR segments to avoid
-repeating a huge table on every line; once assigned, it won't re-attach unless no
-other visual frame covers the moment. Empty `visual` means no slide change there.
+[vc.start-2, vc.end] covers the segment midpoint (±tolerance seconds). An UNUSED
+visual caption is preferred; a visual caption is attached to AT MOST ONE
+consecutive run of ASR segments to avoid repeating a huge table on every line.
+Re-attach fallback (as documented): when no unused caption covers the moment,
+a USED one that covers it is re-attached — a slide that stays on screen for many
+ASR segments keeps its table attached instead of going visually empty. Empty
+`visual` only when no caption window covers the moment at all.
 
 This is the "dual-path fusion" bridge between Path 1 (VLM) and Path 2 (ASR). The
 output is consumed by build_knowledge.py --merged, which interleaves audio text
@@ -47,28 +50,37 @@ def load_segments(path: Path) -> list[dict]:
 
 
 def find_visual_for(mid: float, visual: list[dict], used: set[int],
-                    tolerance: float) -> dict | None:
-    """Return the FIRST UNUSED visual caption whose [start-tol, end] window covers
-    `mid`, else None. Each visual frame is attached to at most one ASR segment so a
-    large on-screen table is not repeated on every narration line."""
+                    tolerance: float) -> int:
+    """Index of the first UNUSED visual caption whose [start-tol, end] window
+    covers `mid`; falling back to the first USED one that covers it (re-attach:
+    a long-lived slide keeps its table instead of going visually empty); else -1.
+
+    Returns the index (not the dict) so the caller avoids an O(n) list.index
+    lookup per segment (O(n^2) overall on long videos)."""
+    fallback = -1
     for i, vc in enumerate(visual):
-        if i in used:
-            continue
         if vc["start"] - tolerance <= mid <= vc["end"]:
-            return vc
-    return None
+            if i not in used:
+                return i
+            if fallback < 0:
+                fallback = i
+    return fallback
 
 
 def merge(asr: list[dict], visual: list[dict], tolerance: float = 2.0) -> dict:
     segs = []
     used: set[int] = set()
+    reattached = 0
     for a in asr:
         mid = (a["start"] + a["end"]) / 2
-        vc = find_visual_for(mid, visual, used, tolerance)
+        i = find_visual_for(mid, visual, used, tolerance)
         vtext = ""
-        if vc is not None:
-            vtext = vc["text"]
-            used.add(visual.index(vc))
+        if i >= 0:
+            vtext = visual[i]["text"]
+            if i in used:
+                reattached += 1
+            else:
+                used.add(i)
         segs.append({
             "start": a["start"], "end": a["end"],
             "text": a["text"], "visual": vtext,
@@ -77,6 +89,7 @@ def merge(asr: list[dict], visual: list[dict], tolerance: float = 2.0) -> dict:
         "asr_count": len(asr),
         "visual_count": len(visual),
         "used_visual": len(used),
+        "reattached": reattached,
         "segments": segs,
     }
 
@@ -114,7 +127,8 @@ def main() -> int:
     out = args.out or args.visual.parent / "merged.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[ok] merged {result['used_visual']}/{len(visual)} visual frames into "
-          f"{len(asr)} ASR segments -> {out}", file=sys.stderr)
+          f"{len(asr)} ASR segments ({result['reattached']} re-attached) -> {out}",
+          file=sys.stderr)
     print(str(out))
     return 0
 
