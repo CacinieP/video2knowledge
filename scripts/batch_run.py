@@ -223,14 +223,17 @@ class Batch:
             [self.py, str(HERE / "build_knowledge.py"),
              "--subtitles", str(run_dir / "subtitles.json"),
              "--merged", str(run_dir / "merged.json"),
-             "--out-dir", str(run_dir), "--format", "all", "--title", title], lg, "B")
+             "--out-dir", str(run_dir), "--format", "all", "--title", title,
+             "--model", self.args.text_model], lg, "B")
         if not self.args.no_notes:
             s[2] += self.run(
                 [self.py, str(HERE / "build_notes.py"),
                  "--subtitles", str(run_dir / "subtitles.json"),
                  "--frames", str(run_dir / "frames" / "frames.json"),
                  "--out-dir", str(run_dir), "--max-frames", "0",  # 0 = auto (1 node/4min, 8-36)
-                 "--describe-frames", "--docx", "--pdf", "--title", title], lg, "B")
+                 "--describe-frames", "--docx", "--pdf", "--title", title,
+                 "--model", self.args.text_model,
+                 "--vlm-model", self.args.vlm_model], lg, "B")
         self.run(
             [self.py, str(HERE / "gen_apkg.py"),
              "--csv", str(run_dir / "cards.csv"),
@@ -267,6 +270,10 @@ def main() -> int:
     ap.add_argument("--root", required=True, type=Path, help="video library root")
     ap.add_argument("--out-root", type=Path, default=Path("runs/batch"))
     ap.add_argument("--asr-model", default="small")
+    ap.add_argument("--text-model", default=os.environ.get("V2K_TEXT_MODEL", "qwen3.5:4b"),
+                    help="Ollama text model for knowledge build + notes "
+                         "(default qwen3.5:4b; use openbmb/minicpm5:Q4_K_M "
+                         "for a much faster lower-quality batch pass)")
     ap.add_argument("--vlm-model", default="openbmb/minicpm-v4.6:latest")
     ap.add_argument("--hotwords", default=DEFAULT_HOTWORDS)
     ap.add_argument("--deck", default="2026注会会计")
