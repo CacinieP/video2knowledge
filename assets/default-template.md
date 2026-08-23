@@ -5,6 +5,9 @@
 ## 摘要
 {{summary}}
 
+## 要点速览（音画合并）
+{{bullets}}
+
 ## 时间轴
 {{timeline}}
 

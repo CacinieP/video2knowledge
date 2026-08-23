@@ -190,8 +190,8 @@ python3 scripts/build_knowledge.py --subtitles s.json --out-dir o \
 ```
 
 Templates are plain Markdown using `{{placeholders}}` (`{{title}}`, `{{summary}}`,
-`{{timeline}}`, `{{key_points}}`, `{{qa}}`, `{{glossary}}`, `{{source}}`,
-`{{duration}}`, `{{date}}`, `{{meta}}`). Only placeholders you include are filled;
+`{{bullets}}` (音画合并要点速览), `{{timeline}}`, `{{key_points}}`, `{{qa}}`, `{{glossary}}`,
+`{{source}}`, `{{duration}}`, `{{date}}`, `{{meta}}`). Only placeholders you include are filled;
 everything else stays verbatim. Full spec + 3 example templates
 (lecture / meeting / tutorial) in `references/templates.md`.
 

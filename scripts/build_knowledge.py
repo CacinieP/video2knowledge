@@ -297,7 +297,7 @@ def _rerank_list(host: str, model: str | None, key: str, items: list[str],
         step = (len(items) - 1) / 149
         items = [items[round(i * step)] for i in range(149)] + [items[-1]]
     zh_names = {"timeline": "关键事件节点", "key_points": "核心知识点",
-                "qa": "问答", "glossary": "术语"}
+                "qa": "问答", "glossary": "术语", "bullets": "音画合并要点"}
     if lang == "zh":
         instr = (f"任务：下面是对一段长视频分块抽取的{zh_names.get(key, key)}候选条目，"
                  f"可能重复、顺序混乱或在分块边界处断裂。请结合视频总体摘要，合并重复项、"
@@ -368,7 +368,7 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     """
     fields = {
         "summary": "", "timeline": "", "key_points": "",
-        "qa": "", "glossary": "",
+        "qa": "", "glossary": "", "bullets": "",
     }
     if not (model and ping(host)):
         return _heuristic_fallback(raw_text, fields)
@@ -399,6 +399,17 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
              "- 要点是提炼后的结论，禁止照抄字幕原句\n"
              "- 只输出列表\n"
              "- 示例：`- 明确目标能提升专注力与成效`"),
+            ("bullets",
+             "任务：下面这段视频材料中，🎙️ 开头的是讲师原声字幕，🖼️ 开头的是同时刻"
+             "幻灯片画面内容（文字/表格/公式）。请把两侧信息融合，输出最多10条要点速览，"
+             "每条同时体现画面上的知识与讲解中的补充。\n"
+             "要求：\n"
+             "- 每行格式 `- **<主题词>** 画面：<幻灯片要点>｜讲解：<讲师的关键补充/案例/提醒> [mm:ss]`\n"
+             "- 画面与讲解各不超过25字，取实质内容；材料中没有 🖼️ 行时省略画面部分，"
+             "格式改为 `- **<主题词>** <讲解要点> [mm:ss]`\n"
+             "- 时间戳取该要点出现的时刻，原样保留\n"
+             "- 只输出列表，不要前缀\n"
+             "- 示例：`- **可靠性** 画面：完整/中立/准确三要素｜讲解：合理估计不等于不准确 [01:07]`"),
             ("qa",
              "任务：基于下面这段视频字幕，设计6到10组中文问答，用于学习测试。\n"
              "严格要求（必须遵守）：\n"
@@ -442,6 +453,20 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
              "- Points must be distilled conclusions, NOT verbatim subtitle lines\n"
              "- Output only the list\n"
              "- Example: `- clear goals improve focus and outcomes`"),
+            ("bullets",
+             "Task: In the material below, lines starting with 🎙️ are the speaker's "
+             "narration and lines with 🖼️ are the on-screen slide content (text/tables/"
+             "formulas) at that moment. Fuse both sides into up to 10 quick-reference "
+             "bullets, each combining the slide knowledge with the speaker's addition.\n"
+             "Rules:\n"
+             "- Each line formatted as `- **<topic>** slide: <slide point> | talk: "
+             "<speaker's key addition/case/caveat> [mm:ss]`\n"
+             "- Keep each side under ~20 words of substance; when no 🖼️ lines exist, "
+             "drop the slide part and use `- **<topic>** <point> [mm:ss]`\n"
+             "- Keep the timestamp verbatim from the material\n"
+             "- Output only the list\n"
+             "- Example: `- **reliability** slide: complete/neutral/accurate | talk: "
+             "reasonable estimates are not inaccurate [01:07]`"),
             ("qa",
              "Task: Based on the subtitles below, design 6 to 10 English Q&A pairs "
              "for a study quiz.\n"
@@ -479,8 +504,8 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     CHUNK = 9000
     long_mode = len(sub) > CHUNK * 1.5
     chunks = _chunk_lines(sub, CHUNK) if long_mode else [sub]
-    LIST_FIELDS = {"timeline", "key_points", "qa", "glossary"}
-    CAPS = {"timeline": 12, "key_points": 12, "qa": 30, "glossary": 16}
+    LIST_FIELDS = {"timeline", "key_points", "qa", "glossary", "bullets"}
+    CAPS = {"timeline": 12, "key_points": 12, "qa": 30, "glossary": 16, "bullets": 16}
     for key, instruction in tasks:
         try:
             if long_mode and key in LIST_FIELDS:
@@ -572,6 +597,7 @@ def _heuristic_fallback(raw_text: str, fields: dict) -> dict:
         "key_points": "- 原始字幕见下方；启用 Ollama 文本模型可生成结构化要点",
         "qa": "- Q: (启用本地模型自动生成问答)\n  A: ...",
         "glossary": "- (启用本地模型自动生成术语表)",
+        "bullets": "- (启用本地模型可生成音画合并要点速览)",
     }
     for k in fields:
         if not fields.get(k):
@@ -770,6 +796,7 @@ def main() -> int:
         "summary": as_md(analysis["summary"]),
         "timeline": as_md(analysis["timeline"]),
         "key_points": as_md(analysis["key_points"]),
+        "bullets": as_md(analysis.get("bullets", "")),
         "qa": as_md(analysis["qa"]),
         "glossary": as_md(analysis["glossary"]),
         "visual_timeline": visual_timeline or "(无视觉信息，使用纯ASR模式)",

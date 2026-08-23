@@ -12,7 +12,7 @@ with generated content; unknown placeholders are left intact so you can spot typ
 | `{{source}}` | Source file name |
 | `{{duration}}` | Video duration `mm:ss` |
 | `{{date}}` | Generation date `YYYY-MM-DD` |
-| `{{summary}}` | 3–5 sentence summary |
+| `{{summary}}`, `{{bullets}}` | 3–5 sentence summary |
 | `{{timeline}}` | Markdown bullet list `[mm:ss] key event` (≤12) |
 | `{{key_points}}` | Markdown bullet list (≤10) |
 | `{{qa}}` | Markdown `Q:` / `A:` pairs (5–10) — also feeds 2.3 cards |
