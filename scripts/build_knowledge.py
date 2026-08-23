@@ -293,6 +293,9 @@ def _rerank_list(host: str, model: str | None, key: str, items: list[str],
     the caller then falls back to truncation."""
     if not items or len(items) <= cap or not (model and ping(host)):
         return None
+    if len(items) > 150:  # 3h lectures: bound the global-pass prompt size
+        step = (len(items) - 1) / 149
+        items = [items[round(i * step)] for i in range(149)] + [items[-1]]
     zh_names = {"timeline": "关键事件节点", "key_points": "核心知识点",
                 "qa": "问答", "glossary": "术语"}
     if lang == "zh":
@@ -470,7 +473,10 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     # each LLM call on a small, accurate context (small/mid models degrade badly
     # on 18k+ char inputs — repeated output, dropped items, bad timestamps).
     # summary is map(summarize)->reduce(summarize).
-    CHUNK = 4500
+    # 9000 (not 4500): qwen3.5:4b handles 9k single-task prompts cleanly and
+    # it halves the call count, so a 3h lecture (~360k chars, 40 chunks) is
+    # tractable while keeping full coverage.
+    CHUNK = 9000
     long_mode = len(sub) > CHUNK * 1.5
     chunks = _chunk_lines(sub, CHUNK) if long_mode else [sub]
     LIST_FIELDS = {"timeline", "key_points", "qa", "glossary"}
@@ -527,7 +533,24 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                     "Task: the items below are summaries of parts of a video. Fuse them "
                     "into one 3-5 sentence overall summary, keeping key info, dropping "
                     "duplicates. Output only the summary.")
-                resp = ask_llm(host, model, reduce_instr + f"\n\n{sublabel}:\n" + joined[:6000])
+
+                def _red(text: str) -> str:
+                    r = ask_llm(host, model, reduce_instr + f"\n\n{sublabel}:\n" + text)
+                    return _strip_fence(r) if r and r.strip() else ""
+
+                # hierarchical reduce: a 3h lecture makes ~40 part-summaries
+                # (>16k chars); reduce in levels of ~12 so no tail is dropped
+                level = parts[:]
+                while len(joined) > 16000 and len(level) > 1:
+                    nxt = []
+                    for i in range(0, len(level), 12):
+                        grp = "\n".join(level[i:i + 12])
+                        nxt.append(_red(grp) or grp[:400])
+                    if len(nxt) >= len(level):
+                        break
+                    level = nxt
+                    joined = "\n".join(level)
+                resp = ask_llm(host, model, reduce_instr + f"\n\n{sublabel}:\n" + joined[:12000])
                 fields[key] = _strip_fence(resp) if resp and resp.strip() else (
                     joined[:500] or _heuristic_fallback(raw_text, {key: ""})[key])
             else:
@@ -697,11 +720,11 @@ def main() -> int:
         mseg = merged_data["segments"]
         raw_text = build_interleaved_text(mseg)
         # merged text interleaves tables/formulas — raise the cap so they survive.
-        # 45k: map-reduce chunks the text (4.5k each) so small models stay
-        # accurate; the cap only bounds runtime. 20k silently dropped the
-        # back half of 60-90 min lectures (measured: 86k interleaved chars
-        # on a 67-min lesson). Raise --char-limit for full coverage.
-        char_limit = args.char_limit or 45000
+        # 400k covers a 3-hour lecture end to end (~360k interleaved chars at
+        # measured course density). Map-reduce chunks the text so the cap only
+        # bounds runtime, not coverage; lower it via --char-limit to trade
+        # completeness for speed.
+        char_limit = args.char_limit or 400000
         print(f"[v2k] merged mode: {len(mseg)} ASR segments, "
               f"{merged_data.get('used_visual', 0)}/{merged_data.get('visual_count', 0)} "
               f"visual frames"
