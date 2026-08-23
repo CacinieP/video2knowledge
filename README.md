@@ -1,6 +1,8 @@
 # 🎬 video2knowledge
 
-> 把视频变成**带时间戳的字幕 → 结构化知识文档 → 图文笔记 → HTML / Anki 卡片**。三条本地推理路径，**全程在本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
+> **一个 Agent Skill**：把视频变成**带时间戳的字幕 → 结构化知识文档 → 图文笔记 → HTML / Anki 卡片**。
+> 装进 agent 的 skills 目录后，一句自然语言（"把这节课做成笔记"）即可驱动全流程；也保留了完整的手动 CLI 流水线（见下方[古法 · 手动 CLI](#-古法--手动跑流水线cli)）。
+> 三条本地推理路径，**全程本地运行，不上传任何视频/字幕/产出**；仓库只跟踪代码与配置变更。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install-from-scratch)
@@ -33,6 +35,31 @@
 
 ---
 
+## 🤖 作为 Agent Skill 使用（推荐方式）
+
+本仓库首先是一个 **skill**：`SKILL.md` 是给 agent 读的"操作手册"（路径选择决策树、参数推荐、产物规范、断点续跑约定），装好后 agent 会自动加载它并编排整条流水线——**你只需要说人话**：
+
+```text
+"用 video2knowledge 把这节课做成笔记"          → agent 自动选路径 3：ASR + OCR + 融合 + 全套产出
+"这个录屏没声音，帮我整理一下"                 → agent 自动选路径 1（多模态）
+"把这批课程视频全部跑一遍，刘忠的优先"          → agent 调 batch_run.py 批量流水线
+"笔记里每条要点要带上幻灯片内容"               → agent 用 {{bullets}} 音画合并要点
+```
+
+把整个仓库 clone 进对应 agent 的 skills 目录即可（任选其一，不互斥）：
+
+| Agent | 安装目录 | 安装命令 |
+|---|---|---|
+| **ZCode** | `~/.zcode/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.zcode/skills/video2knowledge` |
+| **Claude Code** | `~/.claude/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.claude/skills/video2knowledge` |
+| **Cursor** | `~/.cursor/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.cursor/skills/video2knowledge` |
+
+首次使用让 agent 跑一次 `bash scripts/setup_models.sh`（或你自己跑），它会自动探测机型、拉取适配模型、建好 `.venv/`——之后一切交给对话。
+
+> 不用 agent、只想在终端里跑脚本？往下看安装步骤和[古法 · 手动 CLI](#-古法--手动跑流水线cli)。
+
+---
+
 ## 🧱 从零开始安装（5 分钟）
 
 <a id="install-from-scratch"></a>
@@ -41,9 +68,15 @@
 
 ### 第 0 步 · 克隆仓库
 
+打算作为 skill 用（推荐）就直接 clone 进 skills 目录（见上文表格，一次到位）；只想试试 CLI 则任意目录：
+
 ```bash
-git clone https://github.com/CacinieP/video2knowledge.git
-cd video2knowledge
+# skill 用法（以 ZCode 为例，一次到位）
+git clone https://github.com/CacinieP/video2knowledge.git ~/.zcode/skills/video2knowledge
+cd ~/.zcode/skills/video2knowledge
+
+# 或：仅 CLI 试玩
+git clone https://github.com/CacinieP/video2knowledge.git && cd video2knowledge
 ```
 
 ### 第 1 步 · 安装系统依赖（三件套）
@@ -112,25 +145,17 @@ source .venv/bin/activate            # 或 .venv/Scripts/activate
 .venv/Scripts/python.exe scripts/asr_caption.py ...  # Windows
 ```
 
-### 第 4 步 ·（可选）作为 agent skill 使用
+### 第 4 步 · 接回 Agent（如果第 1 步没装）
 
-本仓库自带 `SKILL.md`，可被各类 coding agent 自动加载，让你直接对 agent 说"用 video2knowledge 处理这个视频"即可。把整个仓库放进对应 agent 的 skills 目录即可（任选其一，不互斥）：
+如果第 1 步装在 skills 目录，这一步什么都不用做；如果当时 clone 到了普通目录，把它挪进上文任一 skills 目录即可。仓库内置的 `scripts/setup_models.sh` 会把 venv 建在**仓库根目录的 `.venv/`**，装到任何 agent 目录都一样，无需额外配置。
 
-| Agent | 安装目录 | 安装命令 |
-|---|---|---|
-| **ZCode** | `~/.zcode/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.zcode/skills/video2knowledge` |
-| **Claude Code** | `~/.claude/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.claude/skills/video2knowledge` |
-| **Cursor** | `~/.cursor/skills/video2knowledge/` | `git clone https://github.com/CacinieP/video2knowledge.git ~/.cursor/skills/video2knowledge` |
-
-> 仓库内置的 `scripts/setup_models.sh` 会把 venv 建在**仓库根目录的 `.venv/`**，装到任何 agent 目录都一样，无需额外配置。
-
-> 仅当不通过 agent、直接在终端用脚本时，可跳过本步——`SKILL.md` 是给 agent 读的，终端里用不到。
-
-到这里环境就装好了。下面正式处理视频。
+到这里环境就装好了。下面是手动跑流水线的方式（古法）。
 
 ---
 
-## 🚀 处理第一个视频
+## ⌨️ 古法 · 手动跑流水线（CLI）
+
+> 命令行直接驱动各脚本，适合调试、CI、或不想开 agent 的场合。日常使用建议直接对 agent 说需求，它会替你拼这些命令。
 
 ### A. 路径 2 · ASR（有语音的视频，推荐先试）
 
