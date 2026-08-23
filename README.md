@@ -248,8 +248,9 @@ python3 scripts/build_notes.py \
 
 - **切帧管道流式严格解析**：PGM 帧流按 header 声明的像素数精确读取，绝不扫描像素数据寻找魔数——旧实现在像素字节碰巧含 `P5
 ` 序列时会**静默截断该视频后续全部关键帧**（长批量下必然偶发，表现为"缺内容"）。回归测试 `tests/test_pgm_stream.py` 用内嵌魔数的真实视频守住此缺陷。
+- **尾帧补发（微改动不丢）**：感知哈希阈值只能抓到"足够大"的画面变化——老师在翻页前改一个数字、加一行要点这类**低于阈值的累积微改**会被静默丢弃。检测到翻页时，回看上一相似段的最后一帧：只要它与旧锚点确有差异、自身稳定、且不是新页的近邻，就补发这个"最终状态帧"。三重门限保证手写漂移过程不会帧爆炸（实测：37 分钟课程 28 个尾帧全部命中真翻页前状态，117 个噪声过渡零误发）。回归测试 `tests/test_frames.py`。
 - **Ollama 死锁规避**：单模型统一配置（视觉+文本同模型）+ 常驻加载，消除多模型切换路径上的服务端死锁。
-- 测试：`python tests/test_frames.py && python tests/test_fusion.py && python tests/test_pgm_stream.py`（38 项，无需网络/模型）。
+- 测试：`python tests/test_frames.py && python tests/test_fusion.py && python tests/test_pgm_stream.py`（41 项，无需网络/模型）。
 
 ---
 

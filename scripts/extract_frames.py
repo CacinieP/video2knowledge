@@ -353,7 +353,8 @@ def _extract_jpg_settled(video: Path, t: float, jpg: Path, fps: float,
 
 def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
                   max_frames: int, hash_size: int = 8, hash_mode: str = "dhash",
-                  settle_window: float = 2.0, settle_eps: int = 0) -> list[dict]:
+                  settle_window: float = 2.0, settle_eps: int = 0,
+                  tail_eps: int = 0) -> list[dict]:
     """Dense uniform sampling + dHash dedup + settle + cap to max_frames.
 
     Returns records with accurate timestamps. A frame is kept when its dHash
@@ -361,6 +362,15 @@ def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
     the first SETTLED one after the change (successor nearly identical), so
     transition mid-states (fade halfway, slide mid-animation) are skipped.
     Independent of scene-detection thresholds -> works on any video style.
+
+    Tail emission: when a change is accepted we also keep the LAST sample of
+    the previous similar-run (its final state, carrying any micro-edits that
+    individually stayed below `hamming` — a number changed, one bullet added).
+    Gated three ways so drift crossings don't flood: the tail must differ from
+    the old anchor by > tail_eps, be itself settled, and be far from the
+    incoming anchor (> hamming) so gradual evolution already covered by the
+    next anchor does not double up. The end of the video gets the same
+    final-state treatment.
     """
     all_hashes = _hash_all_frames(video, fps, hash_size, hash_mode)
     duration = ffprobe_duration(video)
@@ -372,6 +382,29 @@ def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
 
     eps = settle_eps or max(2, hamming // 5)
     window_frames = max(1, int(settle_window * fps))
+    t_eps = tail_eps or max(3, hamming // 4)
+
+    def _tail_of(k: int, anchor_bits: np.ndarray, anchor_i: int,
+                 incoming: np.ndarray | None = None) -> int | None:
+        """Final-state sample of the run ending right before change at `k`.
+
+        Returns its index, or None when the tail carries nothing the anchors
+        missed (pure noise run), is a transition mid-state, is blank, or is a
+        near-neighbour of the incoming anchor (gradual drift case).
+        """
+        if k < 2 or k - 1 <= anchor_i:
+            return None
+        _i, tb, tmean = all_hashes[k - 1]
+        _pi, pb, _pm = all_hashes[k - 2]
+        if not (BLANK_RANGE[0] <= tmean <= BLANK_RANGE[1]):
+            return None
+        if _hamming(tb, anchor_bits) <= t_eps:
+            return None          # run never accumulated real change
+        if _hamming(tb, pb) > eps:
+            return None          # tail itself mid-transition
+        if incoming is not None and _hamming(tb, incoming) <= hamming:
+            return None          # next anchor already covers this state
+        return k - 1
 
     # Keep the first NON-BLANK frame (intro fades often start with black);
     # fall back to frame 0 if the whole head is blank.
@@ -382,6 +415,7 @@ def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
             break
     kept_idx = [all_hashes[first][0]]
     last = all_hashes[first][1]
+    last_i = all_hashes[first][0]
     i = first + 1
     while i < len(all_hashes):
         idx, h, _mean = all_hashes[i]
@@ -390,11 +424,20 @@ def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
             # settle may walk back to (nearly) the previously kept picture
             # (animation returning to its start) — re-check before keeping
             if _hamming(hs, last) > hamming:
+                tk = _tail_of(i, last, last_i, hs)
+                if tk is not None:
+                    kept_idx.append(tk)
                 kept_idx.append(j)
                 last = hs
+                last_i = j
             i = j + 1
         else:
             i += 1
+
+    # final state of the video's last run (post-anchor micro-edits included)
+    tk = _tail_of(len(all_hashes), last, last_i)
+    if tk is not None:
+        kept_idx.append(tk)
 
     kept_idx = cap_by_time([t_of(i) for i in kept_idx], max_frames, fps=fps)
 
@@ -448,6 +491,11 @@ def main() -> int:
     ap.add_argument("--settle-eps", type=int, default=0,
                     help="consecutive-frame Hamming <= this counts as settled "
                          "(default 0 = auto: max(2, hamming//5))")
+    ap.add_argument("--tail-eps", type=int, default=0,
+                    help="emit the final frame of each similar-run (captures "
+                         "sub-threshold micro-edits before a slide change) when "
+                         "it differs from the anchor by more than this "
+                         "(default 0 = auto: max(3, hamming//4))")
     args = ap.parse_args()
 
     if not args.video.is_file():
@@ -463,7 +511,8 @@ def main() -> int:
                              args.dedup_hamming, args.max_frames,
                              hash_size=args.hash_size, hash_mode=args.hash_mode,
                              settle_window=args.settle_window,
-                             settle_eps=args.settle_eps)
+                             settle_eps=args.settle_eps,
+                             tail_eps=args.tail_eps)
         nbits = args.hash_size * args.hash_size * (2 if args.hash_mode == "dual" else 1)
         print(f"[ok] extracted {len(recs)} dedup frames "
               f"(fps={args.dedup_fps}, {args.hash_mode} hamming>"
