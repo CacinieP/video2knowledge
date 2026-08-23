@@ -212,7 +212,7 @@ python3 scripts/extract_frames.py --video demo.mp4 --out-dir runs/demo/frames --
 python3 scripts/build_notes.py \
   --subtitles runs/demo/subtitles.json \
   --frames runs/demo/frames/frames.json \
-  --out-dir runs/demo --max-frames 12 --describe-frames
+  --out-dir runs/demo --describe-frames   # 节点数自动(每~4分钟1个,8-36); 也可 --max-frames N 固定
 ```
 
 每个节点：LLM 小标题 → 帧插图 → VLM 画面描述（`--describe-frames`）→ 旁白浓缩要点 → 原声节选。产出 `notes.md`（相对路径插图）和 `notes.html`（base64 自包含单文件，可直接发给别人）。加 `--docx --pdf` 可再导出 `notes.docx` / `notes.pdf`（关键帧嵌入，打印/归档友好；PDF 自动探测系统中文字体，可用 `V2K_PDF_FONT` 指定）。

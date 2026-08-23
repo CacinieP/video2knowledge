@@ -88,7 +88,7 @@ def section_note(host: str, model: str, narration: str, lang: str) -> tuple[str,
         "Line 1: a section title (<=8 words, what this section does)\n"
         "Line 2: a 1-2 sentence note (what is done; key materials/params/caveats)\n"
         "No timestamps, no numbering, no preamble.")
-    resp = ask_llm(host, model, task + "\n\n字幕:\n" + narration[:3000])
+    resp = ask_llm(host, model, task + "\n\n字幕:\n" + narration[:2000])
     if not resp or not resp.strip():
         return "", " / ".join(narration.splitlines()[:2])[:120]
     lines = [l.strip() for l in resp.strip().splitlines() if l.strip()]
@@ -119,16 +119,25 @@ def resolve_frame_file(frames_json: Path, file_ref: str) -> Path:
 
 def build_sections(host: str, model: str | None, vlm_model: str | None,
                    keyframes: list[dict], segs: list[dict], describe: bool,
-                   lang: str) -> list[dict]:
-    """One section per key frame: image + narration window + LLM title/note."""
-    sections = []
+                   lang: str, workers: int = 4) -> list[dict]:
+    """One section per key frame: image + narration window + LLM title/note.
+
+    Sections are independent, so they are generated in parallel (each is one
+    text-LLM call plus optionally one VLM call; Ollama batches concurrent
+    requests). ex.map preserves input order regardless of completion order.
+    """
     n = len(keyframes)
+    items = []
     for i, fr in enumerate(keyframes):
         t0 = fr["t"]
         t1 = keyframes[i + 1]["t"] if i + 1 < n else float("inf")
         window = [s for s in segs if t0 <= s["start"] < t1]
         narration = "\n".join(f"[{fmt_mmss(s['start'])}] {s['text'].strip()}"
                               for s in window if s.get("text", "").strip())
+        items.append((i, fr, t0, window, narration))
+
+    def one(item):
+        i, fr, t0, window, narration = item
         title, note = section_note(host, model, narration, lang)
         desc = ""
         if describe and vlm_model:
@@ -139,14 +148,18 @@ def build_sections(host: str, model: str | None, vlm_model: str | None,
                       file=sys.stderr)
         excerpt = " / ".join(s["text"].strip() for s in window[:3]
                              if s.get("text", "").strip())
-        sections.append({"t": t0, "file": fr["file"], "desc": desc,
-                         "title": title, "note": note, "excerpt": excerpt,
-                         "n_lines": len([s for s in window if s.get("text", "").strip()])})
+        sec = {"t": t0, "file": fr["file"], "desc": desc,
+               "title": title, "note": note, "excerpt": excerpt,
+               "n_lines": len([s for s in window if s.get("text", "").strip()])}
         print(f"[notes] section {i+1}/{n} @ {fmt_mmss(t0)}"
-              f" ({sections[-1]['n_lines']} lines"
+              f" ({sec['n_lines']} lines"
               f"{', VLM' if desc else ''}{', LLM' if title else ''})",
               file=sys.stderr)
-    return sections
+        return sec
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(workers, max(1, n))) as ex:
+        return list(ex.map(one, items))
 
 
 # --- rendering ----------------------------------------------------------------
@@ -224,9 +237,12 @@ def main() -> int:
     ap.add_argument("--frames", required=True, type=Path,
                     help="frames.json from extract_frames.py")
     ap.add_argument("--out-dir", required=True, type=Path)
-    ap.add_argument("--max-frames", type=int, default=12,
-                    help="key-frame cap for the note (cluster-stratified: every "
-                         "change burst keeps its settled frame; default 12)")
+    ap.add_argument("--max-frames", type=int, default=0,
+                    help="key-frame cap for the note (default 0 = AUTO: ~one "
+                         "node per 4 minutes of video, clamped 8-36 — a 3h "
+                         "lecture gets 36 nodes, a 45-min one gets 12; an "
+                         "explicit number fixes it). Cluster-stratified: every "
+                         "change burst keeps its settled frame")
     ap.add_argument("--docx", action="store_true",
                     help="also export notes.docx (needs python-docx)")
     ap.add_argument("--pdf", action="store_true",
@@ -263,7 +279,13 @@ def main() -> int:
         return 2
     # cluster-stratified cap (shared with extract_frames.py): every change
     # burst keeps its settled final frame, remaining budget split proportionally
-    # — an animation burst no longer starves isolated key slides of sections
+    # — an animation burst no longer starves isolated key slides of sections.
+    # --max-frames 0 (default) = AUTO: one node per ~4 min, clamped 8-36.
+    if args.max_frames <= 0:
+        duration = segs[-1]["end"] if segs else 0.0
+        args.max_frames = max(8, min(36, round(duration / 240)))
+        print(f"[notes] auto node budget: {args.max_frames} "
+              f"(~1 per 4 min of {fmt_mmss(duration)})", file=sys.stderr)
     keep_ts = set(cap_by_time([fr["t"] for fr in frames], args.max_frames))
     frames = [fr for fr in frames if fr["t"] in keep_ts]
 

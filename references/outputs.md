@@ -56,8 +56,9 @@ Install the deck:
 `build_notes.py` interleaves deduped key frames with the narration around each
 timestamp. Inputs: `--subtitles` (either path's `.json`) + `--frames`
 (`frames.json` from `extract_frames.py`). Per key frame (capped by
-`--max-frames`, default 12, cluster-stratified — every change burst keeps its
-settled final frame):
+`--max-frames`; default 0 = AUTO — one node per ~4 minutes of video,
+clamped 8-36, cluster-stratified so every change burst keeps its settled
+final frame):
 
 ```markdown
 ## [mm:ss] <LLM section title, <=12 chars>

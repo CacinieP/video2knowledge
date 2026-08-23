@@ -229,7 +229,7 @@ class Batch:
                 [self.py, str(HERE / "build_notes.py"),
                  "--subtitles", str(run_dir / "subtitles.json"),
                  "--frames", str(run_dir / "frames" / "frames.json"),
-                 "--out-dir", str(run_dir), "--max-frames", "12",
+                 "--out-dir", str(run_dir), "--max-frames", "0",  # 0 = auto (1 node/4min, 8-36)
                  "--describe-frames", "--docx", "--pdf", "--title", title], lg, "B")
         self.run(
             [self.py, str(HERE / "gen_apkg.py"),
