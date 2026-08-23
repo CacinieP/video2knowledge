@@ -324,6 +324,28 @@ def _rerank_list(host: str, model: str | None, key: str, items: list[str],
     return None
 
 
+def _line_ts(line: str) -> int | None:
+    """Timestamp in seconds of a `- [mm:ss] ...` list line, else None."""
+    m = re.search(r"\[(\d+):(\d{2})\]", line)
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def _even_spread_ts(items: list[str], budget: int) -> str:
+    """Deterministic time-ordered even sampling of timestamped list lines.
+
+    Guards the LLM re-rank, which occasionally returns only early items
+    (observed: 24-min lecture timeline stopping at 04:18 while the merged
+    pool reached much further). Keeps first and last, spreads between.
+    """
+    ts_items = sorted(((t, l) for l in items if (t := _line_ts(l)) is not None))
+    if not ts_items:
+        return ""
+    if len(ts_items) <= budget:
+        return "\n".join(l for _, l in ts_items)
+    step = (len(ts_items) - 1) / (budget - 1)
+    return "\n".join(ts_items[round(j * step)][1] for j in range(budget))
+
+
 def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                    lang: str = "zh", char_limit: int = 8000) -> dict:
     """Ask the LLM for summary / timeline / key points / QA / glossary.
@@ -473,6 +495,17 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                 reranked = _rerank_list(host, model, key, items,
                                         fields.get("summary", ""), lang,
                                         CAPS[key], budget)
+                if key == "timeline" and reranked:
+                    # guard: if the re-rank clustered early (max ts < 60% of
+                    # the pool's), fall back to deterministic even spread
+                    pool_max = max((t for t in (_line_ts(l) for l in items)
+                                    if t is not None), default=None)
+                    rk_max = max((t for t in (_line_ts(l) for l in reranked.splitlines())
+                                  if t is not None), default=None)
+                    if pool_max and rk_max is not None and rk_max < pool_max * 0.6:
+                        spread = _even_spread_ts(items, CAPS[key])
+                        if spread:
+                            reranked = spread
                 if reranked:
                     fields[key] = reranked
                 elif key == "qa":
