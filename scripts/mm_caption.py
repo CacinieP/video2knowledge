@@ -173,8 +173,9 @@ def main() -> int:
     ap.add_argument("--hash-mode", choices=["dhash", "dual"], default="dhash",
                     help="dual = dHash+aHash for flat/gradient content dHash "
                          "cannot see (scale --dedup-hamming ~2x)")
-    ap.add_argument("--max-frames", type=int, default=120,
-                    help="frame cap in dedup mode (default 120)")
+    ap.add_argument("--max-frames", type=int, default=360,
+                    help="frame cap in dedup mode (default 360, covers a 3h "
+                         "lecture; cluster-stratified when exceeded)")
     ap.add_argument("--prompt-ocr", action="store_true",
                     help="use the table/formula OCR prompt instead of the short "
                          "caption prompt (for slide/PPT videos where ASR misses "

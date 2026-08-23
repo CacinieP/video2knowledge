@@ -45,7 +45,7 @@ distance from the last kept frame exceeds a threshold. A detected change is kept
 at the first **settled** frame — the one whose successor is nearly identical
 (`--settle-window`, default 2s) and which is not blank/black (mean-luma gate) —
 so fades and slide animations are captured in their final stable state. Over
-`--max-frames` (default 120), the budget is split by **change bursts**
+`--max-frames` (default 360, a 3h lecture's worth of changes), the budget is split by **change bursts**
 (cluster-stratified): every burst keeps its settled final frame and the rest is
 distributed proportionally, so an animation burst cannot starve isolated key
 slides. This drops the hundreds of visually-identical static-slide frames (a
@@ -56,7 +56,7 @@ fps sampling is uniform.
 
 ```bash
 python3 scripts/extract_frames.py --video slides.mp4 --out-dir run/frames --mode dedup
-# knobs: --dedup-fps 1.0  --dedup-hamming 10  --max-frames 120
+# knobs: --dedup-fps 1.0  --dedup-hamming 10  --max-frames 360
 #        --hash-size 8  --hash-mode dhash|dual  --settle-window 2.0
 # dual mode: scale --dedup-hamming ~2x, e.g. 20 (2*n^2 bits)
 ```

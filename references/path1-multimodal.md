@@ -75,7 +75,7 @@ A change is kept at its first **settled** frame (successor nearly identical,
 on the final stable slide, not mid-transition. Knobs: `--dedup-hamming` (default
 10 of 64 bits), `--hash-size` (8 → 64-bit, 16 → 256-bit for dense slides),
 `--hash-mode dual` (dHash+aHash for flat/gradient content dHash cannot see —
-scale the threshold ~2x), and `--max-frames` (default 120, cluster-stratified
+scale the threshold ~2x), and `--max-frames` (default 360, cluster-stratified
 budget: every change burst keeps its settled final frame). See
 `references/path3-fusion.md` for the full story.
 

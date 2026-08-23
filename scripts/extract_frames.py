@@ -376,8 +376,10 @@ def main() -> int:
                     help="keep a frame iff dHash Hamming distance from last kept "
                          "frame exceeds this (default 10 of 64 bits; scale ~4x "
                          "for --hash-size 16). Lower=more frames.")
-    ap.add_argument("--max-frames", type=int, default=120,
-                    help="hard cap on kept frames (default 120). Bounded VLM cost.")
+    ap.add_argument("--max-frames", type=int, default=360,
+                    help="hard cap on kept frames (default 360, covers a 3h "
+                         "lecture at measured slide-change density). Bounded "
+                         "VLM cost; cluster-stratified when exceeded.")
     ap.add_argument("--hash-size", type=int, default=8,
                     help="dHash size: (n+1) x n grayscale -> n*n-bit hash "
                          "(default 8 = 64 bits). Raise to 16 (256 bits) to catch "
