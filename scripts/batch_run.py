@@ -5,7 +5,7 @@ Designed for course libraries (e.g. a CPA term of lectures): walks a root dir
 of videos, and per video runs the validated Path-3 chain —
 
     A: asr_caption.py (small + zh + hotwords, wav deleted after)
-    B: mm_caption.py --mode dedup --prompt-ocr --hash-size 16 --dedup-hamming 40
+    B: mm_caption.py --mode dedup --prompt-ocr --hash-size 16 --dedup-hamming 20
        -> hotwords_from_ocr.py (OCR terms -> course vocab; coverage check;
           --asr-verify re-transcribes when coverage is poor)
        -> merge_visual.py -> build_knowledge.py --merged --format all
@@ -190,7 +190,7 @@ class Batch:
              "--video", str(video), "--out-dir", str(run_dir),
              "--mode", "dedup", "--prompt-ocr",
              "--model", self.args.vlm_model,
-             "--hash-size", "16", "--dedup-hamming", "40"], lg, "B")
+             "--hash-size", "16", "--dedup-hamming", "20"], lg, "B")
         # cross-path loop: OCR terms -> course vocab (feeds later stage-A runs)
         # + coverage check against this video's ASR text
         if not self.args.no_ocr_hotwords:
