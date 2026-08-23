@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -159,13 +160,22 @@ def build_visual_timeline(blocks: list[dict], host: str, model: str | None,
 
 # --- Ollama summarization ----------------------------------------------------
 
-def http_json(url: str, payload: dict, timeout: int = 1800) -> dict:
+def http_json(url: str, payload: dict, timeout: int = 1800,
+              retries: int = 1) -> dict:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode())
+        except (urllib.error.URLError, TimeoutError, OSError):
+            # a 9k-char chunk prompt can run ~30 min; dying at the end of one
+            # must not fail the whole video — retry once after a breather
+            if attempt == retries:
+                raise
+            time.sleep(30)
 
 
 def ping(host: str) -> bool:

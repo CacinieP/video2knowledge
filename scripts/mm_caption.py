@@ -53,13 +53,23 @@ PROMPT_OCR = (
 )
 
 
-def http_json(url: str, payload: dict, timeout: int = 180) -> dict:
+def http_json(url: str, payload: dict, timeout: int = 420,
+              retries: int = 1) -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode())
+        except (urllib.error.URLError, TimeoutError, OSError):
+            # a wedged/slow llama-server window must cost a retry, not the
+            # whole video: measured frame-1 OCR under contention is ~160s,
+            # so the old 180s no-retry bound killed multi-hour runs
+            if attempt == retries:
+                raise
+            time.sleep(30)
 
 
 def ping(host: str) -> None:

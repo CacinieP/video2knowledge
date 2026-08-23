@@ -50,13 +50,24 @@ DESC_PROMPT = (
 )
 
 
-def http_generate(host: str, payload: dict, timeout: int = 180) -> dict:
+def http_generate(host: str, payload: dict, timeout: int = 420,
+                  retries: int = 1) -> dict:
+    import time
+    import urllib.error
     import urllib.request
     req = urllib.request.Request(
         f"{host}/api/generate", data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode())
+        except (urllib.error.URLError, TimeoutError, OSError):
+            # VLM frame descriptions measured ~160s under contention; the old
+            # 180s no-retry bound turned slow windows into failed videos
+            if attempt == retries:
+                raise
+            time.sleep(30)
 
 
 def describe_frame(host: str, model: str, jpg: Path) -> str:
