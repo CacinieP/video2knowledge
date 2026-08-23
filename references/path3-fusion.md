@@ -61,7 +61,7 @@ python3 scripts/extract_frames.py --video slides.mp4 --out-dir run/frames --mode
 # dual mode: scale --dedup-hamming ~2x, e.g. 20 (2*n^2 bits)
 ```
 
-`dedup` uses only numpy (hand-written dHash/aHash over an ffmpeg PGM pipe) — no
+`dedup` uses only numpy (hand-written dHash/aHash over an ffmpeg PGM pipe, parsed by a strict streaming reader that reads each frame's declared pixel count and never scans pixel data for the P5 magic) — no
 Pillow or other image dependency.
 
 ## Step 1c — VLM OCR captioning

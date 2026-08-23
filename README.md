@@ -244,6 +244,15 @@ python3 scripts/build_notes.py \
 
 ---
 
+## 🛡️ 稳健性
+
+- **切帧管道流式严格解析**：PGM 帧流按 header 声明的像素数精确读取，绝不扫描像素数据寻找魔数——旧实现在像素字节碰巧含 `P5
+` 序列时会**静默截断该视频后续全部关键帧**（长批量下必然偶发，表现为"缺内容"）。回归测试 `tests/test_pgm_stream.py` 用内嵌魔数的真实视频守住此缺陷。
+- **Ollama 死锁规避**：单模型统一配置（视觉+文本同模型）+ 常驻加载，消除多模型切换路径上的服务端死锁。
+- 测试：`python tests/test_frames.py && python tests/test_fusion.py && python tests/test_pgm_stream.py`（38 项，无需网络/模型）。
+
+---
+
 ## 🎯 实际效果演示
 
 下面是一段 **NASA 公有领域视频**（Curiosity 火星车着陆后 Adam Steltzner 的发言，2分25秒，英文，[来源](https://commons.wikimedia.org/wiki/File:Curiosity_Rover_Begins_Mars_Mission_August_6_2012_-_Adam_Steltzner_speech.webm)，Public Domain）经过完整流水线后的真实产出。
