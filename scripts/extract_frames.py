@@ -194,47 +194,90 @@ def extract_interval(video: Path, out_dir: Path, interval: float, fps_filter: fl
     return records
 
 
+def _iter_pgm_frames(pipe):
+    """Strict streaming PGM (P5) frame reader.
+
+    Reads each frame's header, then EXACTLY width*height pixel bytes. Never
+    scans pixel data for the b"P5\n" magic: a pixel sequence like 0x50 0x35
+    0x0A must not truncate the stream — the previous blob.split(b"P5\\n")
+    parser did exactly that, silently dropping everything after the
+    accidental match (observed as "missing content" on long batches).
+    Yields (pixels ndarray, w, h); returns at clean EOF.
+    """
+    def read_exactly(n: int) -> bytes | None:
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = pipe.read(n - len(buf))
+            if not chunk:
+                return bytes(buf) if buf else None
+            buf += chunk
+        return bytes(buf)
+
+    while True:
+        magic = read_exactly(2)
+        if magic is None:
+            return  # clean EOF between frames
+        if magic != b"P5":
+            raise ValueError(f"bad PGM magic in stream: {magic!r}")
+        vals: list[int] = []
+        cur = bytearray()
+        while len(vals) < 3:  # width, height, maxval
+            b = read_exactly(1)
+            if b is None:
+                return
+            if b == b"#":  # comment to end of line
+                while (c := read_exactly(1)) is not None and c != b"\n":
+                    pass
+                continue
+            if b.isspace():
+                if cur:
+                    vals.append(int(bytes(cur)))
+                    cur = bytearray()
+                # the whitespace terminating maxval is also the single
+                # separator before pixel data (ffmpeg's exact format)
+            else:
+                cur += b
+        pw, ph, _maxval = vals
+        pix = read_exactly(pw * ph)
+        if pix is None or len(pix) < pw * ph:
+            return  # truncated trailing frame — stop
+        yield np.frombuffer(pix, dtype=np.uint8).reshape(ph, pw), pw, ph
+
+
 def _hash_all_frames(video: Path, fps: float, hash_size: int = 8,
                      hash_mode: str = "dhash") -> list[tuple[int, np.ndarray, float]]:
     """Return [(frame_index_0based, hash_bits, mean_luma)] for every frame at
     `fps`.
 
-    Uses an intermediate PGM pipe ((n+1) x n grayscale) so hashing needs no image
-    lib: one ffmpeg pass writes a PGM stream to stdout, parsed incrementally.
-    hash_mode 'dual' concatenates dHash + aHash (2*n^2 bits) to cover content
-    that is horizontally monotone (invisible to dHash alone). mean_luma feeds
-    the blank-frame gate in _find_settled.
+    Streams an ffmpeg PGM pipe ((n+1) x n grayscale) so hashing needs no image
+    lib and no full-video buffering. hash_mode 'dual' concatenates dHash +
+    aHash (2*n^2 bits) to cover content that is horizontally monotone
+    (invisible to dHash alone). mean_luma feeds the blank-frame gate in
+    _find_settled.
     """
     w, h = hash_size + 1, hash_size
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video),
          "-vf", f"fps={fps},scale={w}:{h},format=gray", "-f", "image2pipe",
          "-vcodec", "pgm", "-"],
-        capture_output=True, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
-    blob = proc.stdout
-    # PGM P5 frame size for (n+1) x n: header (~12-16B) + n*(n+1) B pixel data.
-    # Split on the "P5\n" magic that starts each frame.
-    chunks = blob.split(b"P5\n")
-    # first chunk is empty (before first magic); the rest are frame bodies (header tail + pixels)
     out = []
     idx = 0
-    for body in chunks[1:]:
-        # body = "<W> <H>\n<MAXVAL>\n<pixel bytes>"
-        try:
-            nl1 = body.index(b"\n")
-            nl2 = body.index(b"\n", nl1 + 1)
-            pw, ph = (int(x) for x in body[:nl1].split())
-            _maxval = int(body[nl1 + 1:nl2])
-            px = np.frombuffer(body[nl2 + 1:nl2 + 1 + pw * ph], dtype=np.uint8).reshape(ph, pw)
+    try:
+        assert proc.stdout is not None
+        for px, _pw, _ph in _iter_pgm_frames(proc.stdout):
             bits = _dhash_bits(px)
             if hash_mode == "dual":
                 bits = np.concatenate([bits, _ahash_bits(px)])
             out.append((idx, bits, float(px.mean())))
             idx += 1
-        except Exception:
-            # truncated trailing frame — stop
-            break
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+        proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg pgm pipe exited {proc.returncode}")
     return out
 
 
@@ -330,16 +373,25 @@ def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
     eps = settle_eps or max(2, hamming // 5)
     window_frames = max(1, int(settle_window * fps))
 
-    # Keep first frame always, then only on perceptual change (at its settled frame).
-    kept_idx = [all_hashes[0][0]]
-    last = all_hashes[0][1]
-    i = 1
+    # Keep the first NON-BLANK frame (intro fades often start with black);
+    # fall back to frame 0 if the whole head is blank.
+    first = 0
+    for k in range(min(10, len(all_hashes))):
+        if BLANK_RANGE[0] <= all_hashes[k][2] <= BLANK_RANGE[1]:
+            first = k
+            break
+    kept_idx = [all_hashes[first][0]]
+    last = all_hashes[first][1]
+    i = first + 1
     while i < len(all_hashes):
         idx, h, _mean = all_hashes[i]
         if _hamming(h, last) > hamming:
             j, hs = _find_settled(all_hashes, i, eps, window_frames)
-            kept_idx.append(j)
-            last = hs
+            # settle may walk back to (nearly) the previously kept picture
+            # (animation returning to its start) — re-check before keeping
+            if _hamming(hs, last) > hamming:
+                kept_idx.append(j)
+                last = hs
             i = j + 1
         else:
             i += 1
