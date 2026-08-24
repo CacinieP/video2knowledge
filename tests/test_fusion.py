@@ -91,9 +91,10 @@ def test_no_swap_when_timestamp_matches():
 
 
 def test_weak_attribution_flagged_not_swapped():
+    # fresh slide (on screen <60s) + digressing narration -> flagged weak
     visual = [
         {"start": 0.0, "end": 100.0, "text": "长期股权投资 权益法 初始投资成本"},
-        {"start": 100.0, "end": 200.0, "text": "现金流量表 结构分析 编制基础"},
+        {"start": 100.0, "end": 150.0, "text": "现金流量表 结构分析 编制基础"},
     ]
     # narration shares nothing with EITHER slide (speaker digressing)
     asr = [{"start": 101.0, "end": 103.0,
@@ -103,6 +104,14 @@ def test_weak_attribution_flagged_not_swapped():
     check("weak: kept timestamp slide", "现金流量表" in s0["visual"])
     check("weak: flagged", s0["match"] == "weak" and "错位" in s0.get("note", ""))
     check("weak: counted", r["weak_attribution"] == 1)
+    # same digression on a SETTLED slide (>=60s) -> normal elaboration, no flag
+    visual_settled = [
+        {"start": 0.0, "end": 100.0, "text": "长期股权投资 权益法 初始投资成本"},
+        {"start": 100.0, "end": 220.0, "text": "现金流量表 结构分析 编制基础"},
+    ]
+    r2 = mv.merge(asr, visual_settled)
+    check("weak: settled slide unflagged", r2["weak_attribution"] == 0
+          and r2["segments"][0]["match"] == "time")
 
 
 def test_short_narration_not_judged():

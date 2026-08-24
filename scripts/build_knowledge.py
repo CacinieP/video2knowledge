@@ -229,21 +229,62 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
+_TS_HEADER_RE = re.compile(r"^\[\d{1,3}:\d{2}\]")
+
+
 def _chunk_lines(raw_text: str, max_chars: int) -> list[str]:
-    """Split raw_text (newline-separated `[ts] ...` lines) into chunks, each under
-    max_chars, never breaking a line. Returns whole-line chunks."""
-    lines = raw_text.splitlines()
+    """Split raw_text (newline-separated `[ts] ...` lines) into chunks, each
+    under max_chars, never breaking a line — and never cutting a timestamp
+    UNIT: a unit is a `[ts] 🎙️...` header plus its continuation lines. Visual
+    blocks are multi-line (🖼️ header + table rows); a chunk boundary landing
+    mid-table would leave both chunks with half a table and the LLM would
+    never see the whole formula/numbers. An oversized unit gets a chunk of
+    its own (allowed to exceed max_chars rather than be broken)."""
+    units: list[list[str]] = []
+    for ln in raw_text.splitlines():
+        if _TS_HEADER_RE.match(ln) or not units:
+            units.append([ln])
+        else:
+            units[-1].append(ln)
     chunks, cur, cur_len = [], [], 0
-    for ln in lines:
-        n = len(ln) + 1
-        if cur and cur_len + n > max_chars:
+    for u in units:
+        ulen = sum(len(l) + 1 for l in u)
+        if cur and cur_len + ulen > max_chars:
             chunks.append("\n".join(cur))
             cur, cur_len = [], 0
-        cur.append(ln)
-        cur_len += n
+        cur.extend(u)
+        cur_len += ulen
     if cur:
         chunks.append("\n".join(cur))
     return chunks or [raw_text[:max_chars]]
+
+
+_ECHO_RE = re.compile(
+    r"时间戳必须|原样保留|不要新编|只输出|不要解释|不要复述|不要编造|输出格式"
+    r"|任务[：:]|^Task:|^\W*\[mm:ss\]\W*$")
+
+
+def _strip_echo(lines: list[str]) -> list[str]:
+    """Drop prompt-echo bullets: small models occasionally leak instruction
+    fragments (e.g. "[mm:ss] 时间戳必须原样保留，不要新编") into list output.
+    Fingerprints are instruction-specific phrases a real content bullet never
+    contains."""
+    return [l for l in lines if not _ECHO_RE.search(l)]
+
+
+def _caps_for(raw_text: str) -> dict[str, int]:
+    """Field item caps scaled by video duration (parsed from the [mm:ss]
+    timestamps in raw_text). A fixed cap treats a 3h lecture like a 25min
+    one: late chapters get diluted out of the timeline. Scale = duration/45min
+    clamped to [1, 3]."""
+    import math
+    max_ts = max((t for t in (_line_ts(l) for l in raw_text.splitlines())
+                  if t is not None), default=0.0)
+    scale = min(3.0, max(1.0, max_ts / 60.0 / 45.0))
+    base = {"timeline": 12, "key_points": 12, "qa": 30,
+            "glossary": 16, "bullets": 16}
+    return {k: math.ceil(v * scale) for k, v in base.items()}
+
 
 
 def _strip_fence(resp: str) -> str:
@@ -515,7 +556,7 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     long_mode = len(sub) > CHUNK * 1.5
     chunks = _chunk_lines(sub, CHUNK) if long_mode else [sub]
     LIST_FIELDS = {"timeline", "key_points", "qa", "glossary", "bullets"}
-    CAPS = {"timeline": 12, "key_points": 12, "qa": 30, "glossary": 16, "bullets": 16}
+    CAPS = _caps_for(sub)
     for key, instruction in tasks:
         try:
             if long_mode and key in LIST_FIELDS:
@@ -523,7 +564,8 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                 for ch in chunks:
                     resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + ch)
                     if resp and len(resp.strip()) > 3:
-                        collected.extend(l for l in _strip_fence(resp).splitlines() if l.strip())
+                        collected.extend(_strip_echo(
+                            [l for l in _strip_fence(resp).splitlines() if l.strip()]))
                 if key == "qa":
                     pairs = _dedupe_qa_pairs(_parse_qa_pairs(collected))
                     items = [f"Q: {q}\nA: {a}" for q, a in pairs]
@@ -590,8 +632,10 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                     joined[:500] or _heuristic_fallback(raw_text, {key: ""})[key])
             else:
                 resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + sub)
-                fields[key] = _strip_fence(resp) if resp and len(resp.strip()) > 3 else (
-                    _heuristic_fallback(raw_text, {key: ""})[key])
+                body = _strip_fence(resp) if resp and len(resp.strip()) > 3 else ""
+                if body and key in LIST_FIELDS:
+                    body = "\n".join(_strip_echo(body.splitlines()))
+                fields[key] = body or _heuristic_fallback(raw_text, {key: ""})[key]
         except Exception:
             fields[key] = _heuristic_fallback(raw_text, {key: ""})[key]
     return fields

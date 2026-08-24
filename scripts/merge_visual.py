@@ -132,7 +132,7 @@ def find_visual_for(mid: float, visual: list[dict], used: set[int],
 def merge(asr: list[dict], visual: list[dict], tolerance: float = 2.0,
           semantic: bool = True, weak_overlap: float = 0.06,
           swap_margin: float = 0.15, swap_floor: float = 0.12,
-          swap_window: float = 90.0) -> dict:
+          swap_window: float = 90.0, weak_dwell: float = 60.0) -> dict:
     segs = []
     used: set[int] = set()
     reattached = 0
@@ -167,6 +167,12 @@ def merge(asr: list[dict], visual: list[dict], tolerance: float = 2.0,
                         match = "semantic-swap"
                         note = (f"时间戳画面[{_fmt(visual[i]['start'])}]与讲述词面重叠极低,"
                                 f"相邻画面[{_fmt(visual[best_j]['start'])}]匹配更优,已换绑")
+                    elif visual[i]["end"] - visual[i]["start"] >= weak_dwell:
+                        # settled slide (on screen >= weak_dwell): the narrator
+                        # elaborating verbally off-slide is the NORM here, not a
+                        # misattribution — keep the timestamp match unflagged so
+                        # ⚠️ stays a rare, meaningful signal for the LLM
+                        pass
                     else:
                         weak += 1
                         match = "weak"
@@ -216,6 +222,10 @@ def main() -> int:
                     help="max seconds between the narration moment and an "
                          "adjacent slide's window for a swap to be considered "
                          "(default 90)")
+    ap.add_argument("--weak-dwell", type=float, default=60.0,
+                    help="a slide on screen >= this many seconds is 'settled': "
+                         "narration elaborating off-slide is normal and is NOT "
+                         "flagged weak (default 60)")
     args = ap.parse_args()
 
     for p, name in [(args.subtitles, "subtitles"), (args.visual, "visual")]:
@@ -233,7 +243,7 @@ def main() -> int:
 
     result = merge(asr, visual, args.tolerance, semantic=not args.no_semantic,
                    weak_overlap=args.weak_overlap, swap_margin=args.swap_margin,
-                   swap_window=args.swap_window)
+                   swap_window=args.swap_window, weak_dwell=args.weak_dwell)
     # keep full visual blocks for reference
     result["asr_source"] = str(args.subtitles)
     result["visual_source"] = str(args.visual)
