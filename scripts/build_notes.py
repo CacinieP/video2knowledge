@@ -56,7 +56,8 @@ def http_generate(host: str, payload: dict, timeout: int = 420,
     import urllib.error
     import urllib.request
     req = urllib.request.Request(
-        f"{host}/api/generate", data=json.dumps(payload).encode(),
+        f"{host}/api/generate",
+        data=json.dumps({**payload, "keep_alive": -1}).encode(),
         headers={"Content-Type": "application/json"})
     for attempt in range(retries + 1):
         try:

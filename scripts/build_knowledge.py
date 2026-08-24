@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import hashlib
 import html
 import json
 import os
@@ -162,9 +163,13 @@ def build_visual_timeline(blocks: list[dict], host: str, model: str | None,
 
 def http_json(url: str, payload: dict, timeout: int = 1800,
               retries: int = 1) -> dict:
+    # keep_alive per-request: server-side OLLAMA_KEEP_ALIVE can silently
+    # revert to the 5-min default (service manager restart, boot autostart),
+    # which made llama-server recycle mid-burst and pay a model reload every
+    # request — pin it client-side so residency does not depend on env
+    data = json.dumps({**payload, "keep_alive": -1}).encode()
     req = urllib.request.Request(
-        url, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        url, data=data, headers={"Content-Type": "application/json"},
     )
     for attempt in range(retries + 1):
         try:
@@ -286,6 +291,39 @@ def _caps_for(raw_text: str) -> dict[str, int]:
     return {k: math.ceil(v * scale) for k, v in base.items()}
 
 
+class _LLMCache:
+    """Disk-backed response cache for build_analysis LLM calls, keyed by
+    model+prompt hash. A 3h lecture's build makes ~50 chunk calls over 3+
+    hours; dying at chunk 45 used to mean redoing all of them (that is how
+    016 died twice). Cache lives at <out_dir>/build_cache.json and survives
+    crashes/restarts — a retried build replays hits instantly."""
+
+    def __init__(self, path: Path | None, model: str | None):
+        self.path, self.model, self.d, self.dirty = path, model, {}, False
+        if path and path.is_file():
+            try:
+                self.d = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                self.d = {}
+
+    def ask(self, host: str, prompt: str):
+        key = hashlib.sha1(
+            (str(self.model) + "|" + prompt).encode("utf-8")).hexdigest()
+        if key in self.d:
+            return self.d[key]
+        resp = ask_llm(host, self.model, prompt)
+        if resp:
+            self.d[key] = resp
+            self.dirty = True
+        return resp
+
+    def flush(self) -> None:
+        if self.path and self.dirty:
+            self.path.write_text(
+                json.dumps(self.d, ensure_ascii=False), encoding="utf-8")
+            self.dirty = False
+
+
 
 def _strip_fence(resp: str) -> str:
     cleaned = re.sub(r"^```[a-zA-Z]*\s*\n?", "", resp.strip())
@@ -401,7 +439,8 @@ def _even_spread_ts(items: list[str], budget: int) -> str:
 
 
 def build_analysis(host: str, model: str | None, raw_text: str, source: str,
-                   lang: str = "zh", char_limit: int = 8000) -> dict:
+                   lang: str = "zh", char_limit: int = 8000,
+                   cache: _LLMCache | None = None) -> dict:
     """Ask the LLM for summary / timeline / key points / QA / glossary.
 
     Strategy: call the model once PER field with a narrow, plain-markdown prompt.
@@ -423,6 +462,8 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     }
     if not (model and ping(host)):
         return _heuristic_fallback(raw_text, fields)
+
+    ask = cache.ask if cache else (lambda h, prompt: ask_llm(h, model, prompt))
 
     sub = raw_text[:char_limit]
     # Bilingual prompt sets. Match `lang` to the video's language to stop a
@@ -562,7 +603,7 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
             if long_mode and key in LIST_FIELDS:
                 collected = []
                 for ch in chunks:
-                    resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + ch)
+                    resp = ask(host, instruction + f"\n\n{sublabel}:\n" + ch)
                     if resp and len(resp.strip()) > 3:
                         collected.extend(_strip_echo(
                             [l for l in _strip_fence(resp).splitlines() if l.strip()]))
@@ -601,7 +642,7 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                 # summarize each chunk, then summarize the concatenation
                 parts = []
                 for ch in chunks:
-                    resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + ch)
+                    resp = ask(host, instruction + f"\n\n{sublabel}:\n" + ch)
                     if resp and len(resp.strip()) > 3:
                         parts.append(_strip_fence(resp))
                 joined = "\n".join(parts)
@@ -612,7 +653,7 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                     "duplicates. Output only the summary.")
 
                 def _red(text: str) -> str:
-                    r = ask_llm(host, model, reduce_instr + f"\n\n{sublabel}:\n" + text)
+                    r = ask(host, reduce_instr + f"\n\n{sublabel}:\n" + text)
                     return _strip_fence(r) if r and r.strip() else ""
 
                 # hierarchical reduce: a 3h lecture makes ~40 part-summaries
@@ -627,17 +668,20 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                         break
                     level = nxt
                     joined = "\n".join(level)
-                resp = ask_llm(host, model, reduce_instr + f"\n\n{sublabel}:\n" + joined[:12000])
+                resp = ask(host, reduce_instr + f"\n\n{sublabel}:\n" + joined[:12000])
                 fields[key] = _strip_fence(resp) if resp and resp.strip() else (
                     joined[:500] or _heuristic_fallback(raw_text, {key: ""})[key])
             else:
-                resp = ask_llm(host, model, instruction + f"\n\n{sublabel}:\n" + sub)
+                resp = ask(host, instruction + f"\n\n{sublabel}:\n" + sub)
                 body = _strip_fence(resp) if resp and len(resp.strip()) > 3 else ""
                 if body and key in LIST_FIELDS:
                     body = "\n".join(_strip_echo(body.splitlines()))
                 fields[key] = body or _heuristic_fallback(raw_text, {key: ""})[key]
         except Exception:
             fields[key] = _heuristic_fallback(raw_text, {key: ""})[key]
+        finally:
+            if cache:
+                cache.flush()  # crash-safe: each field's chunk calls persist
     # last-line defense: prompt fragments can be re-leaked by ANY llm stage
     # (observed: the re-rank call echoing the key_points instructions verbatim
     # even though the chunk-collection stage had already been filtered)
@@ -834,8 +878,11 @@ def main() -> int:
         print(f"[v2k] {len(segs)} segments, {duration:.0f}s; summarizing with {args.model}...",
               file=sys.stderr)
 
+    llm_cache = _LLMCache(args.out_dir / "build_cache.json", args.model)
     analysis = build_analysis(args.host, args.model, raw_text, source,
-                              lang=args.lang, char_limit=char_limit)
+                              lang=args.lang, char_limit=char_limit,
+                              cache=llm_cache)
+    llm_cache.flush()
 
     def as_md(v) -> str:
         """Coerce any analysis value into a markdown string for template/HTML."""

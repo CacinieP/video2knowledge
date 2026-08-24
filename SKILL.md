@@ -120,16 +120,26 @@ the likely mis-heard jargon; (2) `merge_visual.py` attaches visuals by
 timestamp, then conservatively re-binds a narration line to an ADJACENT slide
 when its word overlap with the timestamp-attached slide is near zero and the
 neighbour matches clearly better (speaker lag / timestamp drift), flagging
-uncertain cases as `weak` instead of guessing (`--no-semantic` restores pure
-timestamp matching); (3) `build_knowledge.py --merged` feeds the LLM
-interleaved audio+visual text with ⚠️ markers on swap/weak notes, and
-re-ranks map-reduced list fields in one global pass with the summary as
-context. In batches, `batch_run.py` accumulates OCR terms into
+uncertain cases as `weak` instead of guessing — except on SETTLED slides
+(≥60 s on screen), where verbal elaboration is the norm and no flag is raised
+(`--no-semantic` restores pure timestamp matching); (3) `build_knowledge.py
+--merged` feeds the LLM interleaved audio+visual text (chunk boundaries never
+cut a slide table; prompt-echo lines are fingerprint-filtered from every list
+field; field caps scale with video duration, 3× at 3 h) with ⚠️ markers on
+swap/weak notes, and re-ranks map-reduced list fields in one global pass with
+the summary as context. Chunk-level LLM responses are cached in
+`build_cache.json`, so an interrupted 3-hour build resumes instead of
+restarting. In batches, `batch_run.py` accumulates OCR terms into
 `course_hotwords.txt` so later videos transcribe better, and `--asr-verify`
 re-transcribes a video whose OCR-term coverage fell below 50 %.
 The default text model is `qwen3.5:4b` (unified vision+text — on `high` machines
 the same pull serves Path 1 and Step 2; override with
 `--model openbmb/minicpm5:Q4_K_M` for low-RAM/fast runs).
+Quality measurement: `scripts/recall_check.py --run-dir <dir> --draft` emits a
+golden must-have list (terms / both-channel numbers / timeline coverage) that a
+human prunes in minutes; `--golden` then scores produced artifacts against it
+(baselines in `tests/golden/BASELINE.md`) — "missing content" becomes a number
+you can track across parameter changes.
 
 ## Refine into Knowledge Artifacts (Step 2)
 
@@ -250,7 +260,7 @@ EOF
 |---|---|
 | `scripts/setup_models.sh` | Idempotent model/venv setup (profile-aware) |
 | `scripts/hardware_profile.py` | Detect machine → recommend ASR/VLM/backend profile |
-| `scripts/extract_frames.py` | Frame sampling: `--mode interval` (uniform fps) or `--mode dedup` (dense sample + dHash dedup with **settle-frame** selection, blank-frame gate, optional `--hash-mode dual` dHash+aHash, and cluster-stratified `--max-frames` budget) → `frames.json` |
+| `scripts/extract_frames.py` | Frame sampling: `--mode interval` (uniform fps) or `--mode dedup` (dense sample + dHash dedup with **settle-frame** selection, blank-frame gate, **tail-frame emission** — the final state of each similar-run is kept so sub-threshold micro-edits before a slide change are not lost, `--tail-eps` to tune; optional `--hash-mode dual` dHash+aHash, and cluster-stratified `--max-frames` budget; at `--hash-size 16` use `--dedup-hamming 20`) → `frames.json` |
 | `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}`; `--mode dedup --prompt-ocr` for slide tables/formulas, with an OCR text-change gate that drops frames whose text is ≥90% similar to the last kept one |
 | `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}`; `--hotwords` biases transcription via initial_prompt |
 | `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` (re-attach fallback keeps long-lived slides attached; semantic alignment check swaps clearly-mismatched attachments to adjacent slides and flags weak ones) |

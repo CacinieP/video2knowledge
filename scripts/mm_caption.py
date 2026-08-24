@@ -55,7 +55,7 @@ PROMPT_OCR = (
 
 def http_json(url: str, payload: dict, timeout: int = 420,
               retries: int = 1) -> dict:
-    data = json.dumps(payload).encode()
+    data = json.dumps({**payload, "keep_alive": -1}).encode()
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"},
     )
