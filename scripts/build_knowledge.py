@@ -638,6 +638,12 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
                 fields[key] = body or _heuristic_fallback(raw_text, {key: ""})[key]
         except Exception:
             fields[key] = _heuristic_fallback(raw_text, {key: ""})[key]
+    # last-line defense: prompt fragments can be re-leaked by ANY llm stage
+    # (observed: the re-rank call echoing the key_points instructions verbatim
+    # even though the chunk-collection stage had already been filtered)
+    for key in LIST_FIELDS:
+        if fields.get(key):
+            fields[key] = "\n".join(_strip_echo(fields[key].splitlines()))
     return fields
 
 

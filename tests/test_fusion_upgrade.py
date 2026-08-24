@@ -110,6 +110,35 @@ def test_caps_scale() -> None:
           and c3["qa"] == 90 and c3["glossary"] == 48, str(c3))
 
 
+def test_echo_final_defense() -> None:
+    """Regression: the re-rank stage re-leaked prompt instructions verbatim
+    ('[mm:ss] 时间戳必须原样保留…') even though collection was filtered.
+    Simulate an LLM that leaks echo in EVERY response — short mode, chunk
+    extraction, summary reduce and re-rank alike — and require clean fields.
+    """
+    raw = _sample_text(blocks=40)                        # ~13k chars -> long mode
+    echo_line = "- **[mm:ss]** 时间戳必须原样保留，不要新编。只输出最终列表，不要解释。"
+    saved_ask, saved_ping = bk.ask_llm, bk.ping
+
+    def leaky_ask(host, model, prompt, **kw):
+        body = "\n".join([echo_line,
+                          "- **要点A** 画面：折旧四方法｜讲解：年限平均法 [04:25]",
+                          "- **要点B** 画面：进项税抵扣｜讲解：一般纳税人可抵 [07:10]"])
+        return "```markdown\n" + body + "\n```"
+
+    bk.ask_llm, bk.ping = leaky_ask, lambda h: True
+    try:
+        fields = bk.build_analysis("http://x", "m", raw, "test", lang="zh",
+                                   char_limit=400000)
+    finally:
+        bk.ask_llm, bk.ping = saved_ask, saved_ping
+    for key in ("timeline", "key_points", "qa", "glossary", "bullets"):
+        check(f"{key} echo-free", "时间戳必须" not in fields[key]
+              and "[mm:ss]" not in fields[key], fields[key][:80])
+    check("content survives the defense", "要点A" in fields["key_points"]
+          or "折旧" in fields["key_points"], fields["key_points"][:120])
+
+
 def main() -> int:
     print("fusion upgrade 1 — atomic chunking:")
     test_atomic_chunking()
@@ -119,6 +148,8 @@ def main() -> int:
     test_weak_dwell_gate()
     print("fusion upgrade 4 — duration-scaled caps:")
     test_caps_scale()
+    print("fusion upgrade 5 — echo final defense (rerank re-leak):")
+    test_echo_final_defense()
     print(f"\nALL {PASS} CHECKS PASSED")
     return 0
 
