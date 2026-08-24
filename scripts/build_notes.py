@@ -250,8 +250,8 @@ def main() -> int:
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--max-frames", type=int, default=0,
                     help="key-frame cap for the note (default 0 = AUTO: ~one "
-                         "node per 4 minutes of video, clamped 8-36 — a 3h "
-                         "lecture gets 36 nodes, a 45-min one gets 12; an "
+                         "node per 90s of video, clamped 8-48 — a 3h "
+                         "lecture gets 48 nodes, a 45-min one gets 30; an "
                          "explicit number fixes it). Cluster-stratified: every "
                          "change burst keeps its settled frame")
     ap.add_argument("--docx", action="store_true",
@@ -291,12 +291,15 @@ def main() -> int:
     # cluster-stratified cap (shared with extract_frames.py): every change
     # burst keeps its settled final frame, remaining budget split proportionally
     # — an animation burst no longer starves isolated key slides of sections.
-    # --max-frames 0 (default) = AUTO: one node per ~4 min, clamped 8-36.
+    # --max-frames 0 (default) = AUTO: one node per ~90s of video, clamped
+    # 8-48 (the old 1-per-4min gave a 37min lecture only 9 illustrated nodes
+    # — users read that as "frames missing" even though all 153 extracted
+    # frames feed the knowledge fusion; the notes are the visible layer).
     if args.max_frames <= 0:
         duration = segs[-1]["end"] if segs else 0.0
-        args.max_frames = max(8, min(36, round(duration / 240)))
+        args.max_frames = max(8, min(48, round(duration / 90)))
         print(f"[notes] auto node budget: {args.max_frames} "
-              f"(~1 per 4 min of {fmt_mmss(duration)})", file=sys.stderr)
+              f"(~1 per 90s of {fmt_mmss(duration)})", file=sys.stderr)
     keep_ts = set(cap_by_time([fr["t"] for fr in frames], args.max_frames))
     frames = [fr for fr in frames if fr["t"] in keep_ts]
 
