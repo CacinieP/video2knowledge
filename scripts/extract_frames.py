@@ -354,7 +354,8 @@ def _extract_jpg_settled(video: Path, t: float, jpg: Path, fps: float,
 def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
                   max_frames: int, hash_size: int = 8, hash_mode: str = "dhash",
                   settle_window: float = 2.0, settle_eps: int = 0,
-                  tail_eps: int = 0) -> list[dict]:
+                  tail_eps: int = 0,
+                  suspects_out: list | None = None) -> list[dict]:
     """Dense uniform sampling + dHash dedup + settle + cap to max_frames.
 
     Returns records with accurate timestamps. A frame is kept when its dHash
@@ -416,6 +417,25 @@ def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
     kept_idx = [all_hashes[first][0]]
     last = all_hashes[first][1]
     last_i = all_hashes[first][0]
+    # appeals: the FINAL dropped sample of each run whose accumulated distance
+    # from its anchor exceeds appeal_floor but was never kept (tail gate
+    # rejected it, or dist stayed under `hamming`). Hash-blind 误伤 repair is
+    # content-level and ASR-free, so silent videos are covered too; mm_caption
+    # OCRs each suspect and admits it iff its text differs from the anchor's.
+    appeal_floor = max(4, hamming // 5)
+    suspects = suspects_out if suspects_out is not None else []
+
+    def _suspect_of(run_final: int, excluded: int | None) -> None:
+        if run_final <= last_i or run_final == excluded or run_final < 1:
+            return
+        _ri, rb, rmean = all_hashes[run_final]
+        if not (BLANK_RANGE[0] <= rmean <= BLANK_RANGE[1]):
+            return
+        d = _hamming(rb, all_hashes[last_i][1])
+        if d > appeal_floor:
+            suspects.append({"t": t_of(run_final), "anchor_t": t_of(last_i),
+                             "dist": d})
+
     i = first + 1
     while i < len(all_hashes):
         idx, h, _mean = all_hashes[i]
@@ -427,6 +447,7 @@ def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
                 tk = _tail_of(i, last, last_i, hs)
                 if tk is not None:
                     kept_idx.append(tk)
+                _suspect_of(i - 1, tk)
                 kept_idx.append(j)
                 last = hs
                 last_i = j
@@ -438,6 +459,7 @@ def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
     tk = _tail_of(len(all_hashes), last, last_i)
     if tk is not None:
         kept_idx.append(tk)
+    _suspect_of(len(all_hashes) - 1, tk)
 
     kept_idx = cap_by_time([t_of(i) for i in kept_idx], max_frames, fps=fps)
 
@@ -496,6 +518,11 @@ def main() -> int:
                          "sub-threshold micro-edits before a slide change) when "
                          "it differs from the anchor by more than this "
                          "(default 0 = auto: max(3, hamming//4))")
+    ap.add_argument("--max-suspects", type=int, default=48,
+                    help="appeal candidates (dropped-run finals beyond "
+                         "dist>max(4,hamming//5) from their anchor) are "
+                         "OCR-verified by mm_caption; even-spread over time, "
+                         "hard cap (default 48, 0 disables)")
     args = ap.parse_args()
 
     if not args.video.is_file():
@@ -507,19 +534,39 @@ def main() -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.mode == "dedup":
+        suspects: list[dict] = []
         recs = extract_dedup(args.video, args.out_dir, args.dedup_fps,
                              args.dedup_hamming, args.max_frames,
                              hash_size=args.hash_size, hash_mode=args.hash_mode,
                              settle_window=args.settle_window,
                              settle_eps=args.settle_eps,
-                             tail_eps=args.tail_eps)
+                             tail_eps=args.tail_eps,
+                             suspects_out=suspects)
         nbits = args.hash_size * args.hash_size * (2 if args.hash_mode == "dual" else 1)
         print(f"[ok] extracted {len(recs)} dedup frames "
               f"(fps={args.dedup_fps}, {args.hash_mode} hamming>"
               f"{args.dedup_hamming} of {nbits} bits, settle<={args.settle_window}s, "
               f"cap={args.max_frames}) -> {args.out_dir}", file=sys.stderr)
+        # bound the appeal cost: even-spread over time, hard cap
+        if args.max_suspects <= 0:
+            sel = []
+        else:
+            sel_t = cap_by_time([s["t"] for s in suspects], args.max_suspects)
+            sel = [s for s in suspects if s["t"] in sel_t]
+        for n, s in enumerate(sel, 1):
+            jpg = args.out_dir / f"suspect_{n:03d}.jpg"
+            if _extract_jpg_settled(args.video, s["t"], jpg, args.dedup_fps) \
+                    and jpg.exists():
+                s["file"] = str(jpg)
+        sel = [s for s in sel if "file" in s]
+        if sel:
+            print(f"[ok] {len(sel)} appeal candidates (dropped-run finals, "
+                  f"dist>{max(4, args.dedup_hamming // 5)}, cap="
+                  f"{args.max_suspects}) -> mm_caption will OCR-verify",
+                  file=sys.stderr)
     else:
         recs = extract_interval(args.video, args.out_dir, args.interval, args.fps)
+        sel = []
         print(f"[ok] extracted {len(recs)} frames -> {args.out_dir}", file=sys.stderr)
 
     manifest = args.out_dir / "frames.json"
@@ -531,7 +578,8 @@ def main() -> int:
          "hash_size": args.hash_size, "hash_mode": args.hash_mode,
          "settle_window": args.settle_window,
          "max_frames": args.max_frames,
-         "count": len(recs), "frames": recs},
+         "count": len(recs), "frames": recs,
+         "suspects": sel},
         ensure_ascii=False, indent=2,
     ))
     print(f"[ok] manifest -> {manifest}")

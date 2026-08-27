@@ -211,7 +211,8 @@ def main() -> int:
     manifest = frames_from(args.video, args.out_dir, args.interval, args.mode,
                            args.dedup_fps, args.dedup_hamming, args.max_frames,
                            hash_size=args.hash_size, hash_mode=args.hash_mode)
-    frames = json.loads(manifest.read_text())["frames"]
+    mdata = json.loads(manifest.read_text())
+    frames = mdata["frames"]
     prompt = PROMPT_OCR if args.prompt_ocr else PROMPT
     ocr_gate = args.prompt_ocr and not args.no_ocr_dedup
     print(f"[mm] {len(frames)} frames to caption with {args.model}"
@@ -237,6 +238,50 @@ def main() -> int:
         preview = text.replace("\n", " ")[:60]
         print(f"[mm] {i+1}/{len(frames)} @ {fr['t']:.1f}s ({elapsed:.1f}s): {preview}",
               file=sys.stderr)
+
+    # ---- appeals: OCR-verify dropped-run finals (hash-gate collateral) ----
+    # The hash gate is content-blind; a run-final differing from its anchor
+    # by dist in (appeal_floor, hamming] was dropped without a content check.
+    # OCR it now and admit iff its text is NEW: it must differ from BOTH the
+    # previous kept caption (the anchor — anchor itself may have been text-
+    # gated, so fall back to the last kept before it) and the NEXT kept
+    # caption — a suspect that only mirrors the following slide is a redundant
+    # intermediate, not recovered content. Content-level repair with no ASR
+    # involvement, so silent videos are covered too. Bounded by extract's
+    # --max-suspects cap.
+    appeals = mdata.get("suspects") or []
+    if appeals and args.prompt_ocr:
+        admitted = 0
+        for s in appeals:
+            f = Path(s["file"])
+            if not f.is_file():
+                continue
+            prev_kept = None
+            next_kept = None
+            for c in captions:
+                if c["start"] <= s["anchor_t"] + 0.01:
+                    prev_kept = c
+                elif c["start"] > s["t"] and next_kept is None:
+                    next_kept = c
+            text = caption_frame(args.host, args.model, f, prompt, True)
+            differs_prev = prev_kept is None or ocr_texts_differ(
+                prev_kept["text"], text, args.ocr_dedup_threshold)
+            differs_next = next_kept is None or ocr_texts_differ(
+                next_kept["text"], text, args.ocr_dedup_threshold)
+            if differs_prev and differs_next:
+                captions.append({"start": s["t"], "end": None, "text": text})
+                admitted += 1
+                print(f"[mm] appeal ADMITTED @ {s['t']:.1f}s (dist {s.get('dist')}"
+                      f" from anchor {s['anchor_t']:.1f}s): "
+                      f"{text.replace(chr(10), ' ')[:60]}", file=sys.stderr)
+            else:
+                why = ("matches anchor" if not differs_prev
+                       else "mirrors following slide")
+                print(f"[mm] appeal dismissed @ {s['t']:.1f}s — {why}",
+                      file=sys.stderr)
+        captions.sort(key=lambda c: c["start"])
+        print(f"[mm] appeals: {admitted}/{len(appeals)} admitted "
+              f"(hash-gate collateral recovered)", file=sys.stderr)
 
     # Each kept caption runs until the next KEPT frame (covering dropped
     # duplicates' time); the last one runs `interval` past the final sample.

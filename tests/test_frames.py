@@ -123,6 +123,54 @@ def test_tail_not_fired_on_gradual_drift() -> None:
     check("drift crossing no tail spam", ts == [0.0, 7.0], str(ts))
 
 
+# ---- appeal candidates (dropped-run finals in the desert band) ----
+def _dedup_with_suspects(samples, tmpdir: Path):
+    saved = (ef._hash_all_frames, ef.ffprobe_duration, ef._extract_jpg_settled)
+    ef._hash_all_frames = lambda *a, **k: [
+        (i, b, 128.0) for i, b in enumerate(samples)]
+    ef.ffprobe_duration = lambda p: float(len(samples))
+    ef._extract_jpg_settled = lambda v, t, jpg, fps: (
+        Path(jpg).write_bytes(b"x") or True)
+    try:
+        susp = []
+        recs = ef.extract_dedup(Path("v.mp4"), Path(tmpdir), 1.0, 20, 360,
+                                suspects_out=susp)
+        return recs, susp
+    finally:
+        (ef._hash_all_frames, ef.ffprobe_duration,
+         ef._extract_jpg_settled) = saved
+
+
+def test_appeal_emitted_for_desert_band_run_final() -> None:
+    # V0 anchor -> drift V6,V10,V15 (dist 6..15, below hamming 20, above
+    # appeal_floor 4; the V15 tail is rejected as mid-transition) -> V24
+    # crossing. The V15 final must surface as an appeal candidate.
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        samples = ([_bits(64, 0)] * 3
+                   + [_bits(64, k) for k in (6, 10, 15)]
+                   + [_bits(64, 24)] * 3 + [_bits(64, 28)])
+        recs, susp = _dedup_with_suspects(samples, td)
+    ts = [s["t"] for s in susp]
+    check("desert-band final becomes appeal", 5.0 in ts, str(susp))
+    check("appeal records its anchor", all(
+        s["anchor_t"] == 0.0 for s in susp if s["t"] == 5.0), str(susp))
+
+
+def test_no_appeal_for_noise_runs_or_video_end() -> None:
+    # near-zero noise final (dist 3 <= appeal_floor) and end-of-video final
+    # (dist 4 from its anchor) must NOT generate appeals
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        samples = ([_bits(64, 0)] * 3 + [_bits(64, 3)] * 4
+                   + [_bits(64, 56)] * 4 + [_bits(64, 60)])
+        recs, susp = _dedup_with_suspects(samples, td)
+    check("noise run final not appealed",
+          not [s for s in susp if 0 < s["t"] < 7], str(susp))
+    check("end final within floor not appealed",
+          not [s for s in susp if s["t"] >= 7], str(susp))
+
+
 def main() -> int:
     print("extract_frames.cap_by_time:")
     test_no_cap_needed()
@@ -133,6 +181,9 @@ def main() -> int:
     test_tail_catches_micro_edit_before_flip()
     test_tail_not_fired_on_noise_run()
     test_tail_not_fired_on_gradual_drift()
+    print("extract_frames appeals:")
+    test_appeal_emitted_for_desert_band_run_final()
+    test_no_appeal_for_noise_runs_or_video_end()
     print(f"\nALL {PASS} CHECKS PASSED")
     return 0
 
