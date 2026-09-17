@@ -2,7 +2,8 @@
 """test_asr_backends.py — unit tests for asr_caption.py backend dispatch & schema.
 
 Verifies the three ASR backends (faster-whisper / funasr / openai-api) all
-produce the canonical subtitles.json schema consumed by build_knowledge.py.
+produce the canonical subtitles.json schema consumed by build_knowledge.py,
+and that hardware-based backend recommendation picks cloud vs local sensibly.
 
 Run:  python tests/test_asr_backends.py
 """
@@ -18,6 +19,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
 
 import asr_caption as ac  # noqa: E402
+
+# hardware_profile is needed for the recommendation tests.
+sys.path.insert(0, str(HERE.parent / "scripts"))
+import hardware_profile as hp  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -234,6 +239,144 @@ def test_canonical_json_schema() -> None:
           all(set(s.keys()) == {"start", "end", "text"} for s in parsed["segments"]))
 
 
+# ---- hardware-based recommendation ----
+
+def test_recommend_tiny_profile_openai_api() -> None:
+    """<6GB RAM should always recommend cloud (openai-api) — local is too slow."""
+    d = {"ram_gb": 4.0, "nvidia_vram_gb": None, "apple_chip": None}
+    backend, reason = hp.recommend_asr_backend(d)
+    check("recommend: tiny RAM → openai-api", backend == "openai-api", backend)
+    check("recommend: tiny RAM reason mentions RAM", "ram" in reason.lower(), reason)
+
+
+def test_recommend_nvidia_gpu_funasr() -> None:
+    """NVIDIA GPU ≥8GB VRAM should recommend local funasr for GPU acceleration."""
+    d = {"ram_gb": 16.0, "nvidia_vram_gb": 12.0, "apple_chip": None}
+    backend, _ = hp.recommend_asr_backend(d)
+    check("recommend: NVIDIA GPU → funasr (local)", backend == "funasr", backend)
+
+
+def test_recommend_apple_silicon_high_ram_funasr() -> None:
+    """Apple Silicon with ≥16GB RAM → funasr (local SOTA possible with Metal)."""
+    d = {"ram_gb": 24.0, "nvidia_vram_gb": None, "apple_chip": "M2 Pro"}
+    backend, _ = hp.recommend_asr_backend(d)
+    check("recommend: Apple Silicon 16GB+ → funasr", backend == "funasr", backend)
+
+
+def test_recommend_apple_silicon_low_ram_faster_whisper() -> None:
+    """Apple Silicon 8-16GB (no NVIDIA) → faster-whisper (lighter than qwen3-asr)."""
+    d = {"ram_gb": 10.0, "nvidia_vram_gb": None, "apple_chip": "M1"}
+    backend, _ = hp.recommend_asr_backend(d)
+    check("recommend: Apple Silicon 8GB → faster-whisper", backend == "faster-whisper", backend)
+
+
+def test_recommend_x86_mid_ram_faster_whisper() -> None:
+    """x86 8-16GB no dGPU → faster-whisper (the safe default)."""
+    d = {"ram_gb": 12.0, "nvidia_vram_gb": None, "apple_chip": None}
+    backend, _ = hp.recommend_asr_backend(d)
+    check("recommend: mid x86 no GPU → faster-whisper", backend == "faster-whisper", backend)
+
+
+def test_recommend_high_ram_funasr() -> None:
+    """≥16GB RAM (any arch) → funasr (can host qwen3-asr locally)."""
+    d = {"ram_gb": 32.0, "nvidia_vram_gb": None, "apple_chip": None}
+    backend, _ = hp.recommend_asr_backend(d)
+    check("recommend: 32GB no GPU → funasr", backend == "funasr", backend)
+
+
+def test_recommend_nvidia_beats_ram_rule() -> None:
+    """NVIDIA short-circuits even on lower RAM (GPU does the heavy lifting)."""
+    d = {"ram_gb": 8.0, "nvidia_vram_gb": 10.0, "apple_chip": None}
+    backend, _ = hp.recommend_asr_backend(d)
+    check("recommend: NVIDIA wins over RAM rule", backend == "funasr", backend)
+
+
+def test_detect_includes_recommendation() -> None:
+    """detect() output includes recommended_asr_backend + recommended_backend_reason."""
+    out = hp.detect.__wrapped__ if hasattr(hp.detect, "__wrapped__") else hp.detect
+    # Don't actually invoke detect() (it probes hardware). Verify schema by patching.
+    import unittest.mock as mock
+    with mock.patch.object(hp, "detect_ram_gb", return_value=8.0), \
+         mock.patch.object(hp, "detect_nvidia_vram_gb", return_value=None), \
+         mock.patch.object(hp, "detect_apple_silicon", return_value=None):
+        d = hp.detect()
+    check("detect: includes recommended_asr_backend",
+          "recommended_asr_backend" in d, str(sorted(d.keys())))
+    check("detect: includes recommended_backend_reason",
+          "recommended_backend_reason" in d, str(sorted(d.keys())))
+    check("detect: recommendation is a known backend",
+          d["recommended_asr_backend"] in {"faster-whisper", "funasr", "openai-api"},
+          d["recommended_asr_backend"])
+
+
+# ---- env-var default override ----
+
+def test_env_var_override_backend() -> None:
+    """ASR_BACKEND env var changes the default backend chosen by argparse."""
+    import os
+    old = os.environ.get("ASR_BACKEND")
+    os.environ["ASR_BACKEND"] = "openai-api"
+    try:
+        ns = ac._build_parser().parse_args(["--video", "x.mp4", "--out-dir", "/tmp/y"])
+        check("env: ASR_BACKEND=openai-api → argparse default = openai-api",
+              ns.backend == "openai-api", ns.backend)
+    finally:
+        if old is None:
+            os.environ.pop("ASR_BACKEND", None)
+        else:
+            os.environ["ASR_BACKEND"] = old
+
+
+def test_env_var_override_api_base() -> None:
+    """ASR_API_BASE env var populates --api-base when not given."""
+    import os
+    old = os.environ.get("ASR_API_BASE")
+    os.environ["ASR_API_BASE"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    try:
+        ns = ac._build_parser().parse_args(["--video", "x.mp4", "--out-dir", "/tmp/y"])
+        check("env: ASR_API_BASE → argparse default = that URL",
+              ns.api_base == "https://dashscope.aliyuncs.com/compatible-mode/v1",
+              ns.api_base)
+    finally:
+        if old is None:
+            os.environ.pop("ASR_API_BASE", None)
+        else:
+            os.environ["ASR_API_BASE"] = old
+
+
+# ---- vendor neutrality: --api-base accepts arbitrary URL ----
+
+def test_argparse_accepts_arbitrary_api_base() -> None:
+    """No vendor lock-in: parser must accept ANY URL for --api-base."""
+    urls = [
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "https://api.openai.com/v1",
+        "https://api.groq.com/openai/v1",
+        "http://127.0.0.1:8080/v1",                              # self-hosted
+        "https://my-llm-gateway.corp.internal/openai-compatible/v1",
+        "https://api.deepinfra.com/v1/openai",
+    ]
+    for url in urls:
+        ns = ac._build_parser().parse_args(
+            ["--video", "x.mp4", "--out-dir", "/tmp/y", "--api-base", url])
+        check(f"argparse: --api-base accepts {url}", ns.api_base == url, ns.api_base)
+
+
+def test_argparse_accepts_arbitrary_api_model() -> None:
+    """No vendor lock-in: --api-model accepts any string (custom model name)."""
+    models = [
+        "qwen3-asr-flash",
+        "whisper-1",
+        "whisper-large-v3-turbo",
+        "my-finetuned-asr-v2",
+        "team-internal/speech-recognizer-2026-09",
+    ]
+    for m in models:
+        ns = ac._build_parser().parse_args(
+            ["--video", "x.mp4", "--out-dir", "/tmp/y", "--api-model", m])
+        check(f"argparse: --api-model accepts {m}", ns.api_model == m, ns.api_model)
+
+
 # ---- runner ----
 
 def main() -> int:
@@ -251,6 +394,21 @@ def main() -> int:
     test_backend_choice_dispatch_table()
     test_argparse_default_backend()
     test_canonical_json_schema()
+    # hardware-based recommendation
+    test_recommend_tiny_profile_openai_api()
+    test_recommend_nvidia_gpu_funasr()
+    test_recommend_apple_silicon_high_ram_funasr()
+    test_recommend_apple_silicon_low_ram_faster_whisper()
+    test_recommend_x86_mid_ram_faster_whisper()
+    test_recommend_high_ram_funasr()
+    test_recommend_nvidia_beats_ram_rule()
+    test_detect_includes_recommendation()
+    # env-var override
+    test_env_var_override_backend()
+    test_env_var_override_api_base()
+    # vendor neutrality
+    test_argparse_accepts_arbitrary_api_base()
+    test_argparse_accepts_arbitrary_api_model()
 
     print(f"\n{PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1

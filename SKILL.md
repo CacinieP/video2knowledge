@@ -6,8 +6,14 @@ description: >-
   Ollama) reads sampled video frames into timestamped captions; (2)
   one of three interchangeable ASR backends — local `faster-whisper`
   (default), local `funasr` (Alibaba, Chinese/multilingual SOTA via
-  qwen3-asr / paraformer-zh / sensevoice-small), or any OpenAI-compatible
-  cloud API (`openai-api`: DashScope, OpenAI, Groq, self-hosted). Then
+  qwen3-asr / paraformer-zh / sensevoice-small), or any vendor-neutral
+  OpenAI-compatible cloud API (`openai-api`: pass `--api-base URL
+  --api-model NAME --api-key-env VAR`; works with DashScope, OpenAI, Groq,
+  self-hosted, your own gateway). Hardware-aware backend recommendation
+  (`--recommend`) suggests cloud vs local based on RAM / NVIDIA GPU /
+  Apple Silicon; defaults cascade from `ASR_BACKEND` / `ASR_API_BASE` /
+  `ASR_API_MODEL` / `ASR_API_KEY_ENV` / `ASR_LANGUAGE` env vars
+  (precedence: CLI > env > hardware_profile). Then
   refine into a structured knowledge doc (custom template supported), a
   self-contained HTML page, a knowledge-card CSV, and an Anki apkg deck.
   Local ingestion stays on the host with faster-whisper or funasr; the
@@ -103,11 +109,17 @@ Outputs: `OUT/subtitles.{srt,vtt,json}`.
 > - `funasr` — Alibaba FunASR. Best **Chinese / multilingual** SOTA
 >   (`--model qwen3-asr` / `paraformer-zh` / `sensevoice-small`).
 >   One-time: `bash scripts/setup_models.sh --with-funasr`.
-> - `openai-api` — any OpenAI-compatible cloud ASR (DashScope Qwen3-ASR,
->   OpenAI Whisper, Groq, self-hosted). One-time:
->   `bash scripts/setup_models.sh --with-openai-client`. Needs `--api-base`,
->   `--api-model`, and an env var named by `--api-key-env` (default
->   `OPENAI_API_KEY`).
+> - `openai-api` — **any** OpenAI-compatible cloud ASR (DashScope Qwen3-ASR,
+>   OpenAI Whisper, Groq, self-hosted, your own gateway). Vendor-neutral:
+>   just `--api-base URL --api-model NAME --api-key-env VAR`. One-time:
+>   `bash scripts/setup_models.sh --with-openai-client`.
+>
+> **Hardware-aware recommendation:** run
+> `python3 scripts/asr_caption.py --recommend` to see whether your machine
+> should run locally (faster-whisper / funasr) or use a cloud endpoint
+> (openai-api). Defaults also cascade from env vars:
+> `ASR_BACKEND`, `ASR_API_BASE`, `ASR_API_MODEL`, `ASR_API_KEY_ENV`,
+> `ASR_LANGUAGE` (precedence: CLI > env > hardware_profile).
 >
 > All three write the **same** `subtitles.{srt,vtt,json}` schema so Step 2 is
 > backend-agnostic. Full presets, model names, and provider matrix in

@@ -77,12 +77,17 @@ if PROFILE_PY="$(profile_python)"; then
   : "${ASR_COMPUTE_TYPE:=$(hp compute_type)}"
   : "${ASR_DEVICE:=$(hp device)}"
   HP_PROFILE="$(hp profile)"
+  # Hardware-based ASR recommendation (cloud vs local).
+  HP_RECOMMENDED_BACKEND="$(hp recommended_asr_backend)"
+  HP_RECOMMENDED_REASON="$(hp recommended_backend_reason)"
 else
   : "${VLM_MODEL:=openbmb/minicpm-v4.6:latest}"
   : "${ASR_DEFAULT_MODEL:=small}"
   : "${ASR_COMPUTE_TYPE:=int8}"
   : "${ASR_DEVICE:=cpu}"
   HP_PROFILE="(python missing — defaults)"
+  HP_RECOMMENDED_BACKEND="faster-whisper"
+  HP_RECOMMENDED_REASON="(hardware detection skipped)"
 fi
 
 # --- 1. ollama + vision model -------------------------------------------------
@@ -238,6 +243,9 @@ cat <<EOF
   profile       : $HP_PROFILE
     -> VLM      : $VLM_MODEL
     -> ASR      : faster-whisper '$ASR_DEFAULT_MODEL' (compute=$ASR_COMPUTE_TYPE, device=$ASR_DEVICE)
+  recommended   : $HP_RECOMMENDED_BACKEND
+                   $HP_RECOMMENDED_REASON
+                   (override anytime with --backend or \$ASR_BACKEND; see 'python3 scripts/asr_caption.py --recommend')
   opt-in extras : funasr=$( [ "$WITH_FUNASR" = "1" ] && echo installed || echo no )  openai-client=$( [ "$WITH_OPENAI_CLIENT" = "1" ] && echo installed || echo no )
   venv          : $VENV_DIR
   run python as : $VENV_PY

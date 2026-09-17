@@ -240,6 +240,53 @@ def select_profile(ram_gb: float, nvidia_vram: float | None = None,
     return "tiny"
 
 
+# --- ASR backend recommendation (cloud vs local) ---------------------------
+#
+# Logic, in priority order:
+#   1. RAM < 6 GB                 → cloud (openai-api).  Local ASR is unusable slow.
+#   2. NVIDIA GPU ≥ 8 GB VRAM     → local funasr.       GPU acceleration wins.
+#   3. Apple Silicon, RAM ≥ 16 GB → local funasr.       Metal + enough RAM for qwen3-asr.
+#   4. RAM ≥ 16 GB (any arch)     → local funasr.       Can host qwen3-asr locally.
+#   5. RAM 8–16 GB (any arch)     → local faster-whisper. Safe mid-tier default.
+#   6. RAM 6–8 GB (any arch)      → local faster-whisper. Base/small is feasible;
+#                                                   openai-api recommended for higher accuracy.
+#
+# Result is a *recommendation*, not a constraint. Users override with
+# --backend or ASR_BACKEND env var. This is the single source of truth that
+# asr_caption.py and setup_models.sh both read.
+
+def recommend_asr_backend(d: dict) -> tuple[str, str]:
+    """Return (backend_name, reason) for the given detect() dict."""
+    ram = float(d.get("ram_gb") or 0)
+    nv = d.get("nvidia_vram_gb")
+    apple = d.get("apple_chip")
+
+    if ram < 6:
+        return ("openai-api",
+                f"RAM only {ram} GB; local ASR is too slow on this hardware. "
+                f"Cloud OpenAI-compatible endpoint recommended.")
+    if nv is not None and float(nv) >= 8:
+        return ("funasr",
+                f"NVIDIA GPU detected ({nv} GB VRAM). Local FunASR qwen3-asr is "
+                f"GPU-accelerated; audio stays on host.")
+    if apple and ram >= 16:
+        return ("funasr",
+                f"Apple Silicon ({apple}) with {ram} GB RAM. Local FunASR qwen3-asr "
+                f"is competitive with Metal acceleration; audio stays on host.")
+    if ram >= 16:
+        return ("funasr",
+                f"{ram} GB RAM. Local FunASR qwen3-asr is feasible on CPU; "
+                f"audio stays on host.")
+    if ram >= 8:
+        return ("faster-whisper",
+                f"{ram} GB RAM, no strong GPU. faster-whisper 'small' is a balanced "
+                f"local default. Override with --backend openai-api for higher Chinese "
+                f"accuracy (DashScope qwen3-asr-flash, etc.).")
+    return ("faster-whisper",
+            f"{ram} GB RAM. faster-whisper 'base' is the local ceiling; "
+            f"openai-api recommended if you want higher accuracy.")
+
+
 def detect() -> dict:
     """Run all detection and return a full profile dict."""
     ram = detect_ram_gb()
@@ -267,6 +314,14 @@ def detect() -> dict:
         "device": prof["device"],
         "vlm_model": prof["vlm"],
         "note": prof["note"],
+        # Hardware-aware recommendation (cloud vs local ASR).
+        **{k: v for k, v in zip(
+            ("recommended_asr_backend", "recommended_backend_reason"),
+            recommend_asr_backend({
+                "ram_gb": round(ram, 1),
+                "nvidia_vram_gb": round(nvidia, 1) if nvidia else None,
+                "apple_chip": apple,
+            }))},
     }
 
 

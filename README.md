@@ -130,7 +130,34 @@ bash scripts/setup_models.sh --with-funasr        # 本地 Alibaba FunASR（qwen
 bash scripts/setup_models.sh --with-openai-client # OpenAI / DashScope / Groq SDK
 ```
 
-全部例子见 `references/path2-asr.md`（含 DashScope 设置环境变量 + `--api-base` 预设）。
+**硬件感知推荐**：脚本会根据你的机器（RAM / NVIDIA GPU / Apple Silicon）建议云侧还是端侧方案：
+
+```bash
+python3 scripts/asr_caption.py --recommend
+# hardware profile : mid  (8-16 GB RAM)
+# recommended route: LOCAL
+# recommended backend: faster-whisper
+#   reason         : 8 GB RAM, no strong GPU. faster-whisper 'small' is balanced local default
+# suggested command: --backend faster-whisper --model small --language <zh|en|auto>
+```
+
+**可厂商中立自定义模型**：openai-api 后端用任意 OpenAI 兼容端点 + 任意模型名：
+
+```bash
+--backend openai-api --api-base https://your-host/v1 --api-model your-model --api-key-env YOUR_KEY
+```
+
+**免去每次敲长参数**（在 `~/.zshrc` 加一行）：
+
+```bash
+export ASR_BACKEND=openai-api
+export ASR_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+export ASR_API_MODEL=qwen3-asr-flash
+export ASR_API_KEY_ENV=DASHSCOPE_API_KEY
+export ASR_LANGUAGE=zh
+```
+
+所有例子 + 详细矩阵见 `references/path2-asr.md`。
 
 看看它给你选了什么档位：
 

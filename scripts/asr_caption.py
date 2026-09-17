@@ -69,6 +69,15 @@ DETECTED_PROFILE = _hp("profile", "unknown")
 DETECTED_RAM = float(_hp("ram_gb", "0") or "0")
 MODEL_WARN = {"large", "large-v1", "large-v2", "large-v3", "medium"}
 
+# Env-var defaults — resolved at parser-build time (NOT import time) so users
+# can override per-invocation. Precedence: CLI > env > hardware_profile > built-in.
+# Example shell-rc lines:
+#   export ASR_BACKEND=openai-api
+#   export ASR_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+#   export ASR_API_MODEL=qwen3-asr-flash
+#   export ASR_API_KEY_ENV=DASHSCOPE_API_KEY
+#   export ASR_LANGUAGE=zh
+
 
 def extract_wav(video: Path, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -264,46 +273,77 @@ _register_backends()
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # Read env at parse time, not import time, so tests + per-shell invocations work.
+    env_backend     = os.environ.get("ASR_BACKEND")      or DEFAULT_BACKEND
+    env_model       = os.environ.get("ASR_MODEL")        or DEFAULT_MODEL
+    env_language    = os.environ.get("ASR_LANGUAGE")     or "zh"
+    env_device      = os.environ.get("ASR_DEVICE")       or DEFAULT_DEVICE
+    env_compute     = os.environ.get("ASR_COMPUTE_TYPE") or DEFAULT_COMPUTE
+    env_api_base    = os.environ.get("ASR_API_BASE")     or None
+    env_api_model   = os.environ.get("ASR_API_MODEL")    or None
+    env_api_key_env = os.environ.get("ASR_API_KEY_ENV")  or "OPENAI_API_KEY"
+
     ap = argparse.ArgumentParser(
-        description="ASR → timestamped subtitles. Backends: faster-whisper / funasr / openai-api.")
-    ap.add_argument("--video", required=True, type=Path)
-    ap.add_argument("--out-dir", required=True, type=Path)
+        description="ASR → timestamped subtitles. Backends: faster-whisper / funasr / openai-api.\n"
+                    "Run with --recommend to print a hardware-based backend suggestion.\n"
+                    "Any OpenAI-compatible endpoint works for --backend openai-api\n"
+                    "(--api-base URL + --api-model NAME).")
+    ap.add_argument("--video", required=False, type=Path,
+                    help="input video (not required with --recommend)")
+    ap.add_argument("--out-dir", required=False, type=Path,
+                    help="output directory (not required with --recommend)")
     ap.add_argument("--backend", choices=sorted(BACKENDS.keys()),
-                    default=DEFAULT_BACKEND,
-                    help=f"ASR backend (default {DEFAULT_BACKEND}, from hardware profile)")
+                    default=env_backend,
+                    help=f"ASR backend. Precedence: CLI > $ASR_BACKEND > hardware profile. "
+                         f"(default {env_backend})")
     # faster-whisper & funasr use --model; openai-api uses --api-model.
-    ap.add_argument("--model", default=DEFAULT_MODEL,
-                    help="backend-specific model id. faster-whisper: tiny/base/small/medium/large-v3. "
-                         "funasr: qwen3-asr / paraformer-zh / sensevoice-small / …")
-    ap.add_argument("--language", default="zh", help="language code or 'auto'")
-    ap.add_argument("--device", default=DEFAULT_DEVICE,
-                    help=f"cpu | cuda | auto (default {DEFAULT_DEVICE}, from profile). "
+    ap.add_argument("--model", default=env_model,
+                    help="backend-specific model id. faster-whisper: tiny/base/small/medium/large-v3 "
+                         "(or any HuggingFace Whisper id). funasr: qwen3-asr / paraformer-zh / "
+                         "sensevoice-small / any FunASR AutoModel name. (default "
+                         f"{env_model}; $ASR_MODEL overrides)")
+    ap.add_argument("--language", default=env_language,
+                    help=f"language code or 'auto' (default {env_language}; $ASR_LANGUAGE overrides)")
+    ap.add_argument("--device", default=env_device,
+                    help=f"cpu | cuda | auto (default {env_device}). "
                          "Used by faster-whisper and funasr; ignored by openai-api.")
-    ap.add_argument("--compute-type", default=DEFAULT_COMPUTE,
+    ap.add_argument("--compute-type", default=env_compute,
                     help=f"int8 | int8_float16 | float16 | float32 "
-                         f"(default {DEFAULT_COMPUTE}, from profile). "
-                         "faster-whisper only; ignored by funasr/openai-api.")
+                         f"(default {env_compute}). faster-whisper only.")
     ap.add_argument("--hotwords", default=None,
                     help="domain terms to bias transcription: comma/space/、separated, "
                          "or @terms.txt (one per line). Passed through to each backend "
                          "via its native bias mechanism (initial_prompt / hotword / prompt).")
-    # openai-api specific
-    ap.add_argument("--api-base", default=None,
+    # openai-api specific. Defaults come from env so users can set once in shell rc.
+    ap.add_argument("--api-base", default=env_api_base,
                     help="openai-api only: endpoint base URL, e.g. "
-                         "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    ap.add_argument("--api-model", default=None,
+                         "https://dashscope.aliyuncs.com/compatible-mode/v1 "
+                         "(any OpenAI-compatible URL; default $ASR_API_BASE)")
+    ap.add_argument("--api-model", default=env_api_model,
                     help="openai-api only: model id at the endpoint, e.g. "
-                         "qwen3-asr-flash / whisper-1 / whisper-large-v3-turbo")
-    ap.add_argument("--api-key-env", default="OPENAI_API_KEY",
+                         "qwen3-asr-flash / whisper-1 / any custom model name "
+                         "(default $ASR_API_MODEL)")
+    ap.add_argument("--api-key-env", default=env_api_key_env,
                     help="openai-api only: name of env var holding the API key "
-                         "(default OPENAI_API_KEY). Use DASHSCOPE_API_KEY for DashScope, "
-                         "GROQ_API_KEY for Groq, etc.")
+                         f"(default {env_api_key_env}; $ASR_API_KEY_ENV overrides)")
+    ap.add_argument("--recommend", action="store_true",
+                    help="print a hardware-based backend recommendation and exit "
+                         "(does not run ASR; ignores --video/--out-dir).")
     return ap
 
 
 def main() -> int:
     args = _build_parser().parse_args()
 
+    # --recommend: print hardware-based suggestion, then exit. No ASR run.
+    if args.recommend:
+        _print_recommendation()
+        return 0
+
+    if not args.video or not args.out_dir:
+        print("[err] --video and --out-dir are required (unless using --recommend)",
+              file=sys.stderr)
+        return 2
     if not args.video.is_file():
         print(f"[err] video not found: {args.video}", file=sys.stderr)
         return 2
@@ -316,7 +356,8 @@ def main() -> int:
 
     # openai-api uses --api-model; others fall back to --model.
     if args.backend == "openai-api" and not args.api_model:
-        print("[err] --backend openai-api requires --api-model", file=sys.stderr)
+        print("[err] --backend openai-api requires --api-model "
+              "(or set $ASR_API_MODEL)", file=sys.stderr)
         return 3
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -345,6 +386,49 @@ def main() -> int:
     print(f"[ok] backend={args.backend} {len(segs)} segments -> "
           f"{args.out_dir}/subtitles.{{srt,vtt,json}}")
     return 0
+
+
+def _print_recommendation() -> None:
+    """Read hardware_profile and print a cloud-vs-local ASR recommendation."""
+    sys.path.insert(0, str(HERE))
+    import hardware_profile as hp_mod
+    try:
+        d = hp_mod.detect()
+    except Exception as e:
+        print(f"[err] hardware detection failed: {e}", file=sys.stderr)
+        return
+    backend = d.get("recommended_asr_backend", "faster-whisper")
+    reason = d.get("recommended_backend_reason", "")
+    route = "local" if backend in ("faster-whisper", "funasr") else "cloud"
+    print(f"hardware profile : {d.get('profile', '?')}  ({d.get('note', '')})")
+    print(f"  ram            : {d.get('ram_gb')} GB")
+    if d.get("apple_chip"):
+        print(f"  apple silicon  : {d['apple_chip']}")
+    if d.get("nvidia_vram_gb"):
+        print(f"  nvidia vram    : {d['nvidia_vram_gb']} GB")
+    print()
+    print(f"recommended route: {route.upper()}")
+    print(f"recommended backend: {backend}")
+    print(f"  reason         : {reason}")
+    print()
+    # Preset commands so the user can copy-paste.
+    if backend == "faster-whisper":
+        print("suggested command:")
+        print(f"  --backend faster-whisper --model {d.get('asr_model', 'small')} "
+              f"--language <zh|en|auto>")
+    elif backend == "funasr":
+        print("install once:")
+        print("  bash scripts/setup_models.sh --with-funasr")
+        print("suggested command:")
+        print("  --backend funasr --model qwen3-asr --language zh")
+    elif backend == "openai-api":
+        print("install once:")
+        print("  bash scripts/setup_models.sh --with-openai-client")
+        print("suggested command (any OpenAI-compatible endpoint; pick yours):")
+        print("  --backend openai-api --api-base <YOUR_ENDPOINT> --api-model <MODEL> "
+              "--api-key-env <ENV_VAR_WITH_KEY>")
+    print()
+    print("override precedence: --backend flag > $ASR_BACKEND > this recommendation")
 
 
 if __name__ == "__main__":

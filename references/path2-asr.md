@@ -64,24 +64,58 @@ Notes:
 - Segment timestamps come from FunASR's `timestamp` field (ms); the converter
   treats the whole item as one segment spanning the first → last token.
 
-### Backend C — OpenAI-compatible cloud API
+### Backend C — OpenAI-compatible cloud API (any provider)
 
-Any ASR endpoint that speaks the OpenAI `/v1/audio/transcriptions` shape
-works. The OpenAI Python SDK ≥1.0 handles auth, retries, and schema.
+`--backend openai-api` accepts **any** ASR endpoint that speaks the OpenAI
+`/v1/audio/transcriptions` shape. The script does **not** hardcode provider
+names or model lists — you bring your own endpoint URL and model id. The
+OpenAI Python SDK ≥1.0 handles auth, retries, and the verbose_json schema.
 
-**Provider presets** (pick one, set the env var, pass `--api-base`):
+Required CLI flags (only for `openai-api`):
+- `--api-base URL` — your endpoint's base URL (no vendor is special-cased)
+- `--api-model NAME` — your model id at that endpoint (any string)
+- `--api-key-env VAR` — name of the env var holding the API key; **never**
+  pass the key itself on the CLI (avoid shell-history leakage). Defaults to
+  `OPENAI_API_KEY`.
 
-| Provider | `--api-base` | `--api-model` | `--api-key-env` |
+The endpoint is asked for `verbose_json`; segments are converted verbatim to
+`{start, end, text}`. API key is read from the env var named by
+`--api-key-env` (default `OPENAI_API_KEY`) — never pass the key itself on
+the CLI. `--device` / `--compute-type` are ignored.
+
+**Examples of OpenAI-compatible ASR endpoints** (the script works with ANY URL; this list is illustrative, not a whitelist — your own gateway / a model you host works the same way):
+
+| Example endpoint | `--api-base` | `--api-model` (example) | `--api-key-env` |
 |---|---|---|---|
 | DashScope (Aliyun, Qwen3-ASR) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3-asr-flash` | `DASHSCOPE_API_KEY` |
 | OpenAI | `https://api.openai.com/v1` | `whisper-1` | `OPENAI_API_KEY` |
 | Groq | `https://api.groq.com/openai/v1` | `whisper-large-v3-turbo` | `GROQ_API_KEY` |
 | Local `whisper.cpp` server / faster-whisper-server (any OpenAI-compatible) | `http://127.0.0.1:8080/v1` | `whisper-1` | (often empty) |
+| Your own gateway / a model you host | `https://your-host/v1` | `your-model-name` | `YOUR_API_KEY_ENV` |
 
 Install the SDK once:
 ```bash
 bash scripts/setup_models.sh --with-openai-client
 ```
+
+#### Persisting defaults in shell rc (recommended)
+
+Instead of typing the same flags every run, set them once:
+
+```bash
+# in ~/.zshrc or ~/.bashrc
+export ASR_BACKEND=openai-api
+export ASR_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+export ASR_API_MODEL=qwen3-asr-flash
+export ASR_API_KEY_ENV=DASHSCOPE_API_KEY
+export ASR_LANGUAGE=zh
+```
+
+Then a single-line run is enough:
+```bash
+python3 scripts/asr_caption.py --video lecture.mp4 --out-dir runs/lecture-dash
+```
+Override per-run with the same CLI flag (CLI > env > hardware_profile).
 
 Example — DashScope Qwen3-ASR (cloud, Chinese SOTA, no local GPU):
 ```bash
