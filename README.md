@@ -28,7 +28,10 @@
 **三条路径**任选或并用：
 
 - **路径 1 · 多模态**：原生多模态小模型（≤4B VLM，经 Ollama）逐帧读视频 → 带时间戳字幕。适合**无音轨 / 纯画面 / 屏幕录制 / 演示文稿**，能抓 ASR 看不见的屏幕文字和图表。
-- **路径 2 · ASR**：faster-whisper 转写音轨 → 带时间戳字幕。适合**有清晰语音的视频**（讲座/访谈/教程），更快更准。
+- **路径 2 · ASR**：三选一的 ASR 后端转写音轨 → 带时间戳字幕。适合**有清晰语音的视频**（讲座/访谈/教程）。
+  - `faster-whisper`（默认，本地 Whisper，CTranslate2）
+  - `funasr`（本地，Alibaba FunASR，中文/多语种 SOTA：`qwen3-asr` / `paraformer-zh`）
+  - `openai-api`（任意 OpenAI 兼容云端：DshScope `qwen3-asr-flash`、OpenAI `whisper-1`、Groq）
 - **路径 3 · 音画融合**：ASR 抓讲解 + VLM OCR 抓屏幕（表格/公式/举例），按时间戳融合，外加**跨路径反馈**——OCR 术语回灌 ASR 热词、语义对齐校正讲解/幻灯片错位。适合**有语音讲解的 PPT/幻灯片视频**——把 ASR 听不到的画面内容补回来。
 
 路径 1、2 产出的字幕 schema 一致，第二步（知识加工）对路径无感；路径 3 产出融合的 `merged.json`，由第二步的 `--merged` 消费。
@@ -117,6 +120,17 @@ bash scripts/setup_models.sh
 跑完会打印一段总结，**注意 `run python as:` 那一行**——那是本机 venv 解释器的绝对路径（Windows 是 `.venv/Scripts/python.exe`，macOS/Linux 是 `.venv/bin/python`，脚本自动识别）。
 
 想建在别处？用环境变量 `VENV_DIR=...` 覆盖。
+
+### 可选：其他 ASR 后端
+
+路径 2 默认用 faster-whisper。中文 / 多语种视频可换 `funasr` 后端（本地 qwen3-asr），或走任意 OpenAI 兼容云端 ASR：
+
+```bash
+bash scripts/setup_models.sh --with-funasr        # 本地 Alibaba FunASR（qwen3-asr / paraformer-zh）
+bash scripts/setup_models.sh --with-openai-client # OpenAI / DashScope / Groq SDK
+```
+
+全部例子见 `references/path2-asr.md`（含 DashScope 设置环境变量 + `--api-base` 预设）。
 
 看看它给你选了什么档位：
 

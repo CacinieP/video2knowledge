@@ -13,6 +13,108 @@ the recommended path whenever the video has a clear speech track.
 Avoid Path 2 when: the video is silent/slide-only, audio is non-speech, or you
 need what is visually on screen (use Path 1 or run both).
 
+## Choose an ASR backend (`--backend`, since 2026-09)
+
+Path 2 has three interchangeable backends. All emit the **same** subtitles
+schema so `build_knowledge.py` does not change:
+
+| Backend | `--backend` | Where it runs | Best for | Install |
+|---|---|---|---|---|
+| faster-whisper | `faster-whisper` *(default)* | local, CPU/CTranslate2 | general English, broad multilingual, no setup | default `setup_models.sh` |
+| FunASR (Alibaba) | `funasr` | local, PyTorch | **Chinese / multilingual SOTA** (qwen3-asr, paraformer-zh, sensevoice-small) | opt-in: `bash scripts/setup_models.sh --with-funasr` |
+| OpenAI-compatible API | `openai-api` | cloud, any OpenAI-shape endpoint | quick cloud run; no local GPU needed; up-to-date provider models | opt-in: `bash scripts/setup_models.sh --with-openai-client` |
+
+Default is `faster-whisper` from `scripts/hardware_profile.py` (field
+`asr_backend_default`). Override globally with env `ASR_BACKEND=funasr` or
+per-run with `--backend`.
+
+### Backend A — faster-whisper (default)
+
+Already documented below this section. No change.
+
+### Backend B — FunASR (local, qwen3-asr)
+
+**Why FunASR / Qwen3-ASR for Chinese?** On the HF Open ASR Leaderboard
+(2026-09), Qwen3-ASR-1.7B hits **5.76% mean WER** across 8 datasets, vs
+Whisper-large-v3's 7.44% — and it's natively strong on Chinese, code-switch,
+and 52 languages via auto-detection. For a Chinese lecture video this is the
+strongest open-source local choice; Whisper is the safer general fallback.
+
+Install once:
+```bash
+bash scripts/setup_models.sh --with-funasr
+```
+First run auto-downloads the model from ModelScope (~2–4 GB).
+
+```bash
+python3 scripts/asr_caption.py \
+  --video lecture.mp4 --out-dir runs/lecture-asr \
+  --backend funasr --model qwen3-asr --language zh
+```
+
+Other FunASR model names (`--model` is passed straight to `AutoModel`):
+- `paraformer-zh` — Mandarin-only, faster, smaller
+- `paraformer-zh-streaming` — streaming Mandarin
+- `sensevoice-small` — multilingual tiny (good for short clips, 17 languages)
+
+Notes:
+- `--device cpu|cuda` is honored by FunASR when supported; most models auto-pick.
+- `--compute-type` is ignored (FunASR uses its own dtype handling).
+- `--hotwords` is passed as FunASR's `hotword=` param (same parser, same syntax).
+- Segment timestamps come from FunASR's `timestamp` field (ms); the converter
+  treats the whole item as one segment spanning the first → last token.
+
+### Backend C — OpenAI-compatible cloud API
+
+Any ASR endpoint that speaks the OpenAI `/v1/audio/transcriptions` shape
+works. The OpenAI Python SDK ≥1.0 handles auth, retries, and schema.
+
+**Provider presets** (pick one, set the env var, pass `--api-base`):
+
+| Provider | `--api-base` | `--api-model` | `--api-key-env` |
+|---|---|---|---|
+| DashScope (Aliyun, Qwen3-ASR) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3-asr-flash` | `DASHSCOPE_API_KEY` |
+| OpenAI | `https://api.openai.com/v1` | `whisper-1` | `OPENAI_API_KEY` |
+| Groq | `https://api.groq.com/openai/v1` | `whisper-large-v3-turbo` | `GROQ_API_KEY` |
+| Local `whisper.cpp` server / faster-whisper-server (any OpenAI-compatible) | `http://127.0.0.1:8080/v1` | `whisper-1` | (often empty) |
+
+Install the SDK once:
+```bash
+bash scripts/setup_models.sh --with-openai-client
+```
+
+Example — DashScope Qwen3-ASR (cloud, Chinese SOTA, no local GPU):
+```bash
+export DASHSCOPE_API_KEY=sk-…
+python3 scripts/asr_caption.py \
+  --video lecture.mp4 --out-dir runs/lecture-dash \
+  --backend openai-api \
+  --api-base https://dashscope.aliyuncs.com/compatible-mode/v1 \
+  --api-model qwen3-asr-flash \
+  --api-key-env DASHSCOPE_API_KEY \
+  --language zh
+```
+
+Example — OpenAI Whisper API:
+```bash
+export OPENAI_API_KEY=sk-…
+python3 scripts/asr_caption.py \
+  --video lecture.mp4 --out-dir runs/lecture-openai \
+  --backend openai-api \
+  --api-base https://api.openai.com/v1 \
+  --api-model whisper-1 --language en
+```
+
+Notes:
+- API key is **never** a CLI flag — it's read from the env var named by `--api-key-env`
+  (default `OPENAI_API_KEY`). Reduces accidental leakage into shell history / logs.
+- `--hotwords` becomes the OpenAI `prompt` parameter (≤ ~224 tokens; biases
+  vocabulary the same way `--initial-prompt` / FunASR `hotword` do).
+- The endpoint is asked for `verbose_json`; segments are converted verbatim.
+- `language_probability` is reported as `1.0` since OpenAI / DashScope don't
+  surface it; `--language` is passed through when set.
+- `--device` / `--compute-type` are ignored (the cloud handles all that).
+
 ## Model sizing
 
 The default `--model` / `--compute-type` / `--device` are **auto-selected from
@@ -35,9 +137,12 @@ low-RAM profile. Override explicitly with `--model`.
 **2026-08 note:** the whisper ladder still fits faster-whisper (CTranslate2).
 `--model turbo` (large-v3-turbo, 809M) is the speed/accuracy sweet spot when
 `large-v3` is too slow on your GPU — near-large quality at several times the
-speed. Newer leaderboard models (NVIDIA Canary-Qwen 2.5B, Mistral Voxtral,
-FireRedASR for Mandarin) need different inference stacks, so they are not
-wired in as defaults.
+speed. Other 2026 SOTA models with different inference stacks (NVIDIA
+Parakeet / Canary, IBM Granite Speech, Mistral Voxtral, Cohere Transcribe) are
+still not wired in as defaults — for Chinese/multilingual we now expose
+**FunASR** (`--backend funasr`, qwen3-asr / paraformer-zh) and **any
+OpenAI-compatible cloud ASR** (`--backend openai-api`, e.g. DashScope,
+OpenAI, Groq); see "Choose an ASR backend" above.
 
 ## Device & compute type
 

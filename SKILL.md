@@ -4,10 +4,14 @@ description: >-
   Convert videos into timestamped subtitles and structured knowledge artifacts.
   Two ingestion paths: (1) a native multimodal VLM (at most 4B params, via
   Ollama) reads sampled video frames into timestamped captions; (2)
-  faster-whisper ASR transcribes the audio into timestamped subtitles. Then
+  one of three interchangeable ASR backends — local `faster-whisper`
+  (default), local `funasr` (Alibaba, Chinese/multilingual SOTA via
+  qwen3-asr / paraformer-zh / sensevoice-small), or any OpenAI-compatible
+  cloud API (`openai-api`: DashScope, OpenAI, Groq, self-hosted). Then
   refine into a structured knowledge doc (custom template supported), a
   self-contained HTML page, a knowledge-card CSV, and an Anki apkg deck.
-  Fully local — no video, audio, or output ever leaves the host; the repo
+  Local ingestion stays on the host with faster-whisper or funasr; the
+  `openai-api` backend uploads audio to the endpoint you choose. The repo
   tracks only code and config changes. Use when transcribing or summarizing a
   video, building study cards from a lecture or recording, turning a silent or
   screen-recording video into notes, or producing reviewable knowledge from any
@@ -92,6 +96,22 @@ python3 scripts/asr_caption.py \
   --hotwords "术语一, 术语二"   # optional jargon biasing via initial_prompt
 ```
 Outputs: `OUT/subtitles.{srt,vtt,json}`.
+
+> **Three interchangeable ASR backends (since 2026-09):** pass
+> `--backend {faster-whisper,funasr,openai-api}`. Default is `faster-whisper`.
+> - `faster-whisper` — local Whisper (CTranslate2). Best general English.
+> - `funasr` — Alibaba FunASR. Best **Chinese / multilingual** SOTA
+>   (`--model qwen3-asr` / `paraformer-zh` / `sensevoice-small`).
+>   One-time: `bash scripts/setup_models.sh --with-funasr`.
+> - `openai-api` — any OpenAI-compatible cloud ASR (DashScope Qwen3-ASR,
+>   OpenAI Whisper, Groq, self-hosted). One-time:
+>   `bash scripts/setup_models.sh --with-openai-client`. Needs `--api-base`,
+>   `--api-model`, and an env var named by `--api-key-env` (default
+>   `OPENAI_API_KEY`).
+>
+> All three write the **same** `subtitles.{srt,vtt,json}` schema so Step 2 is
+> backend-agnostic. Full presets, model names, and provider matrix in
+> `references/path2-asr.md`.
 
 ### Path 3 — Dual-path fusion (ASR × VLM)
 
@@ -262,7 +282,7 @@ EOF
 | `scripts/hardware_profile.py` | Detect machine → recommend ASR/VLM/backend profile |
 | `scripts/extract_frames.py` | Frame sampling: `--mode interval` (uniform fps) or `--mode dedup` (dense sample + dHash dedup with **settle-frame** selection, blank-frame gate, **tail-frame emission** — the final state of each similar-run is kept so sub-threshold micro-edits before a slide change are not lost, `--tail-eps` to tune; optional `--hash-mode dual` dHash+aHash, and cluster-stratified `--max-frames` budget; at `--hash-size 16` use `--dedup-hamming 20`) → `frames.json` |
 | `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}`; `--mode dedup --prompt-ocr` for slide tables/formulas, with an OCR text-change gate that drops frames whose text is ≥90% similar to the last kept one |
-| `scripts/asr_caption.py` | Path 2: faster-whisper → `subtitles.{srt,vtt,json}`; `--hotwords` biases transcription via initial_prompt |
+| `scripts/asr_caption.py` | Path 2: ASR → `subtitles.{srt,vtt,json}`. `--backend {faster-whisper,funasr,openai-api}` picks the engine; `--hotwords` biases transcription via each backend's native mechanism (initial_prompt / hotword / prompt) |
 | `scripts/merge_visual.py` | Path 3: fuse ASR `subtitles.json` × VLM `captions.json` by timestamp → `merged.json` (re-attach fallback keeps long-lived slides attached; semantic alignment check swaps clearly-mismatched attachments to adjacent slides and flags weak ones) |
 | `scripts/hotwords_from_ocr.py` | Path 3 loop: extract salient terms from VLM OCR → `ocr_hotwords.txt` (+ accumulating `course_hotwords.txt`), check ASR coverage of those terms, exit 3 under `--fail-under` to trigger re-transcription |
 | `scripts/build_knowledge.py` | Step 2: subtitles → knowledge.md / .html / cards.csv; `--merged` for dual-path fusion with `{{visual_timeline}}` section, ⚠️ swap/weak markers, map-reduce + global re-rank; `--format docx` / `--format pdf` for office/print |

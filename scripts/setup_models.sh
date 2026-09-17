@@ -19,6 +19,31 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # installed (e.g. ~/.agents/skills/video2knowledge), not a hardcoded HOME path.
 VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
 
+# --- opt-in extras (zero behavior change unless requested) ------------------
+# --with-funasr        install Alibaba FunASR + modelscope (local qwen3-asr /
+#                       paraformer-zh / sensevoice-small). Optional backend.
+# --with-openai-client install openai>=1 SDK (OpenAI / DashScope / Groq Whisper
+#                       via OpenAI-compatible HTTP). Optional backend.
+WITH_FUNASR=0
+WITH_OPENAI_CLIENT=0
+for arg in "$@"; do
+  case "$arg" in
+    --with-funasr)        WITH_FUNASR=1 ;;
+    --with-openai-client) WITH_OPENAI_CLIENT=1 ;;
+    --without-funasr|--without-openai-client) : ;;  # accepted, no default install
+    -h|--help)
+      cat <<USAGE
+Usage: bash scripts/setup_models.sh [--with-funasr] [--with-openai-client]
+  Default behavior: only install faster-whisper + genanki + docx/pdf libs
+  (unchanged from earlier versions).
+  --with-funasr         add Alibaba FunASR + modelscope (for --backend funasr)
+  --with-openai-client  add openai>=1 SDK (for --backend openai-api)
+USAGE
+      exit 0 ;;
+    *) log "[setup] unknown arg '$arg' (ignored)";;
+  esac
+done
+
 # --- cross-platform helpers ---------------------------------------------------
 log() { printf '[setup] %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -162,6 +187,42 @@ VENV_PY="$(venv_python)" || { log "ERROR: venv dir exists but no python found in
   fi
 }
 
+# --- 2b. opt-in extra ASR backends ------------------------------------------
+# Default: nothing extra. --with-funasr / --with-openai-client add deps for
+# the corresponding --backend choices. Imported lazily inside asr_caption.py.
+
+if [ "$WITH_FUNASR" = "1" ]; then
+  if "$VENV_PY" -c "import funasr" 2>/dev/null; then
+    log "funasr already installed (skipping)"
+  else
+    log "Installing funasr + modelscope (for --backend funasr)..."
+    if have uv; then
+      uv pip install --python "$VENV_PY" --quiet "funasr>=1.1" modelscope || {
+        log "WARN: funasr/modelscope install failed. Check your Python wheel availability"
+        log "      (funasr ships manylinux/macos wheels; on exotic platforms try"
+        log "      'uv pip install funasr --no-binary :all:')."
+      }
+    else
+      "$VENV_PY" -m pip install --quiet "funasr>=1.1" modelscope || {
+        log "WARN: funasr/modelscope install failed (see message above)."
+      }
+    fi
+  fi
+fi
+
+if [ "$WITH_OPENAI_CLIENT" = "1" ]; then
+  if "$VENV_PY" -c "import openai" 2>/dev/null; then
+    log "openai SDK already installed (skipping)"
+  else
+    log "Installing openai>=1 SDK (for --backend openai-api)..."
+    if have uv; then
+      uv pip install --python "$VENV_PY" --quiet "openai>=1.0"
+    else
+      "$VENV_PY" -m pip install --quiet "openai>=1.0"
+    fi
+  fi
+fi
+
 # --- 3. ffmpeg ---------------------------------------------------------------
 if ! have ffmpeg; then
   log "ERROR: ffmpeg not found. Install:"
@@ -177,7 +238,10 @@ cat <<EOF
   profile       : $HP_PROFILE
     -> VLM      : $VLM_MODEL
     -> ASR      : faster-whisper '$ASR_DEFAULT_MODEL' (compute=$ASR_COMPUTE_TYPE, device=$ASR_DEVICE)
+  opt-in extras : funasr=$( [ "$WITH_FUNASR" = "1" ] && echo installed || echo no )  openai-client=$( [ "$WITH_OPENAI_CLIENT" = "1" ] && echo installed || echo no )
   venv          : $VENV_DIR
   run python as : $VENV_PY
   Override with : VLM_MODEL=... ASR_DEFAULT_MODEL=... bash setup_models.sh
+  Add backends  : bash scripts/setup_models.sh --with-funasr        # local qwen3-asr / paraformer-zh
+                  bash scripts/setup_models.sh --with-openai-client # cloud via OpenAI-compatible HTTP
 EOF

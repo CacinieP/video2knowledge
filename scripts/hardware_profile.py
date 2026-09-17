@@ -262,6 +262,7 @@ def detect() -> dict:
         "nvidia_vram_gb": round(nvidia, 1) if nvidia else None,
         "profile": pname,
         "asr_model": prof["asr"],
+        "asr_backend_default": "faster-whisper",  # users opt into funasr/openai-api explicitly
         "compute_type": compute,
         "device": prof["device"],
         "vlm_model": prof["vlm"],

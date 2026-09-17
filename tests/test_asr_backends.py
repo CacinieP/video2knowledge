@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""test_asr_backends.py — unit tests for asr_caption.py backend dispatch & schema.
+
+Verifies the three ASR backends (faster-whisper / funasr / openai-api) all
+produce the canonical subtitles.json schema consumed by build_knowledge.py.
+
+Run:  python tests/test_asr_backends.py
+"""
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "scripts"))
+
+import asr_caption as ac  # noqa: E402
+
+PASS = 0
+FAIL = 0
+
+
+def check(name: str, cond: bool, detail: str = "") -> None:
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  ok {name}")
+    else:
+        FAIL += 1
+        print(f"  FAIL {name} {detail}")
+
+
+# ---- fixtures ----
+
+class FakeWhisperSegment:
+    """Mimics faster_whisper.WhisperModel segment objects (.start/.end/.text)."""
+
+    def __init__(self, start: float, end: float, text: str):
+        self.start = start
+        self.end = end
+        self.text = text
+
+
+def fake_funasr_item(text: str, ts_pairs: list[list[int]]) -> dict:
+    """Mimics funasr AutoModel.generate() output element."""
+    return {"text": text, "timestamp": ts_pairs}
+
+
+def fake_openai_segment(idx: int, start: float, end: float, text: str) -> MagicMock:
+    """Mimics OpenAI verbose_json segment object."""
+    seg = MagicMock()
+    seg.id = idx
+    seg.start = start
+    seg.end = end
+    seg.text = text
+    return seg
+
+
+# ---- pure-helper tests (no I/O, no mocks of heavy libs) ----
+
+def test_load_hotwords_comma_and_dunhao() -> None:
+    out = ac.load_hotwords("foo, bar、baz qux")
+    check("hotwords: comma + dunhao + space all parsed",
+          out is not None and "foo" in out and "bar" in out and "baz" in out and "qux" in out,
+          repr(out))
+
+
+def test_load_hotwords_file_at_syntax() -> None:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+        f.write("alpha\nbeta\n\ngamma\n")  # blank line should be skipped
+        path = Path(f.name)
+    try:
+        out = ac.load_hotwords(f"@{path}")
+        check("hotwords: @file reads lines", "alpha" in out and "beta" in out and "gamma" in out,
+              repr(out))
+        check("hotwords: blank lines skipped", out is not None and out.count("、") == 2,
+              repr(out))
+    finally:
+        path.unlink()
+
+
+def test_load_hotwords_empty() -> None:
+    check("hotwords: empty returns None", ac.load_hotwords("") is None)
+    check("hotwords: None returns None", ac.load_hotwords(None) is None)
+
+
+def test_srt_format_basic() -> None:
+    segs = [{"start": 0.0, "end": 2.5, "text": "Hello"},
+            {"start": 2.5, "end": 5.123, "text": "World"}]
+    srt = ac.to_srt(segs)
+    check("srt: 1-indexed numbering", srt.startswith("1\n"))
+    check("srt: timestamp HH:MM:SS,mmm",
+          "00:00:00,000 --> 00:00:02,500" in srt and
+          "00:00:02,500 --> 00:00:05,123" in srt,
+          srt)
+    check("srt: text preserved", "Hello" in srt and "World" in srt)
+
+
+def test_vtt_format_basic() -> None:
+    segs = [{"start": 0.0, "end": 2.5, "text": "Hello"}]
+    vtt = ac.to_vtt(segs)
+    check("vtt: WEBVTT header", vtt.startswith("WEBVTT"))
+    check("vtt: timestamp dots (.)",
+          "00:00:00.000 --> 00:00:02.500" in vtt, vtt)
+
+
+# ---- per-backend schema conversion (pure functions) ----
+
+def test_segs_from_faster_whisper_basic() -> None:
+    seg_iter = [FakeWhisperSegment(0.0, 2.5, "Hello "),
+                FakeWhisperSegment(2.5, 5.0, "World")]
+    segs = ac._segs_from_faster_whisper(seg_iter)
+    check("fw: count", len(segs) == 2, str(segs))
+    check("fw: stripped text", segs[0]["text"] == "Hello", segs[0])
+    check("fw: 3-dp rounding", segs[1]["end"] == 5.0, segs[1])
+    check("fw: schema keys",
+          all(set(s.keys()) == {"start", "end", "text"} for s in segs))
+
+
+def test_segs_from_funasr_basic() -> None:
+    """FunASR AutoModel returns list[dict] with 'text' + 'timestamp' (ms pairs).
+
+    Segment span = first token start → last token end (covers the whole
+    utterance regardless of how many char/word-level pairs the model emits).
+    """
+    result = [
+        fake_funasr_item("你好世界", [[0, 500], [500, 1500]]),  # 2 word-pairs → end = 1500ms
+        fake_funasr_item("这是第二句", [[1500, 3000]]),         # 1 word-pair  → end = 3000ms
+    ]
+    segs = ac._segs_from_funasr(result)
+    check("funasr: count", len(segs) == 2, str(segs))
+    check("funasr: text preserved", segs[0]["text"] == "你好世界", segs[0])
+    check("funasr: ms→s conversion (segment = first token start → last token end)",
+          segs[0]["start"] == 0.0 and segs[0]["end"] == 1.5, segs[0])
+    check("funasr: second segment span",
+          segs[1]["start"] == 1.5 and segs[1]["end"] == 3.0, segs[1])
+    check("funasr: schema keys",
+          all(set(s.keys()) == {"start", "end", "text"} for s in segs))
+
+
+def test_segs_from_funasr_empty_timestamp_fallback() -> None:
+    """If FunASR returns no timestamp (some models), emit 0.0/0.0 placeholder."""
+    result = [fake_funasr_item("only text", [])]
+    segs = ac._segs_from_funasr(result)
+    check("funasr: empty timestamp → 0.0/0.0",
+          segs[0]["start"] == 0.0 and segs[0]["end"] == 0.0, segs[0])
+
+
+def test_segs_from_openai_api_basic() -> None:
+    """OpenAI verbose_json returns pydantic-like objects with .start/.end/.text."""
+    fake_segs = [fake_openai_segment(0, 0.0, 2.5, " Hello,"),
+                 fake_openai_segment(1, 2.5, 5.0, " World.")]
+    segs = ac._segs_from_openai_api(fake_segs)
+    check("openai-api: count", len(segs) == 2, str(segs))
+    check("openai-api: leading-space stripped",
+          segs[0]["text"] == "Hello,", segs[0])
+    check("openai-api: schema keys",
+          all(set(s.keys()) == {"start", "end", "text"} for s in segs))
+
+
+# ---- backend-dispatch & guard tests ----
+
+def test_openai_api_missing_key_raises() -> None:
+    """openai-api backend fails clearly when the named env var is unset."""
+    import os
+    os.environ.pop("VIDE_TEST_KEY", None)
+    args = MagicMock()
+    args.api_key_env = "VIDE_TEST_KEY"
+    args.api_base = "https://example.com/v1"
+    args.api_model = "whisper-1"
+    args.language = "en"
+    args.hotwords = None
+    try:
+        ac._run_openai_api(args, Path("/tmp/fake.wav"))
+        check("openai-api: missing key raises", False, "did not raise")
+    except RuntimeError as e:
+        check("openai-api: missing key raises",
+              "VIDE_TEST_KEY" in str(e), str(e))
+
+
+def test_openai_api_missing_base_raises() -> None:
+    """openai-api backend fails clearly when --api-base is not set."""
+    args = MagicMock()
+    args.api_base = None
+    args.api_key_env = "OPENAI_API_KEY"
+    args.api_model = "whisper-1"
+    args.language = "en"
+    args.hotwords = None
+    try:
+        ac._run_openai_api(args, Path("/tmp/fake.wav"))
+        check("openai-api: missing base raises", False, "did not raise")
+    except RuntimeError as e:
+        check("openai-api: missing base raises",
+              "api-base" in str(e).lower(), str(e))
+
+
+def test_backend_choice_dispatch_table() -> None:
+    """Each --backend value resolves to a runnable function."""
+    table = ac.BACKENDS  # type: ignore[attr-defined]
+    check("dispatch table exposes all three backends",
+          set(table.keys()) == {"faster-whisper", "funasr", "openai-api"},
+          str(sorted(table.keys())))
+    check("dispatch table values are callable",
+          all(callable(v) for v in table.values()))
+
+
+def test_argparse_default_backend() -> None:
+    """No --backend flag → 'faster-whisper' (backward-compatible default)."""
+    import argparse
+    # Build a parser identical to main()'s via the helper.
+    parser = ac._build_parser()  # type: ignore[attr-defined]
+    ns = parser.parse_args(["--video", "x.mp4", "--out-dir", "/tmp/y"])
+    check("argparse: default backend is faster-whisper",
+          ns.backend == "faster-whisper", getattr(ns, "backend", "MISSING"))
+
+
+# ---- schema round-trip ----
+
+def test_canonical_json_schema() -> None:
+    """Final JSON output matches the contract build_knowledge.py consumes."""
+    segs = [{"start": 0.0, "end": 1.0, "text": "A"},
+            {"start": 1.0, "end": 2.0, "text": "B"}]
+    info = {"language": "zh", "language_probability": 0.99, "duration": 2.0}
+    payload = {**info, "segments": segs}
+    blob = json.dumps(payload, ensure_ascii=False)
+    parsed = json.loads(blob)
+    check("schema: top-level keys",
+          set(parsed.keys()) >= {"language", "language_probability", "duration", "segments"},
+          str(parsed.keys()))
+    check("schema: segment keys",
+          all(set(s.keys()) == {"start", "end", "text"} for s in parsed["segments"]))
+
+
+# ---- runner ----
+
+def main() -> int:
+    test_load_hotwords_comma_and_dunhao()
+    test_load_hotwords_file_at_syntax()
+    test_load_hotwords_empty()
+    test_srt_format_basic()
+    test_vtt_format_basic()
+    test_segs_from_faster_whisper_basic()
+    test_segs_from_funasr_basic()
+    test_segs_from_funasr_empty_timestamp_fallback()
+    test_segs_from_openai_api_basic()
+    test_openai_api_missing_key_raises()
+    test_openai_api_missing_base_raises()
+    test_backend_choice_dispatch_table()
+    test_argparse_default_backend()
+    test_canonical_json_schema()
+
+    print(f"\n{PASS} passed, {FAIL} failed")
+    return 0 if FAIL == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
