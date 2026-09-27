@@ -23,6 +23,7 @@ schema so `build_knowledge.py` does not change:
 | faster-whisper | `faster-whisper` *(default)* | local, CPU/CTranslate2 | general English, broad multilingual, no setup | default `setup_models.sh` |
 | FunASR (Alibaba) | `funasr` | local, PyTorch | **Chinese / multilingual SOTA** (qwen3-asr, paraformer-zh, sensevoice-small) | opt-in: `bash scripts/setup_models.sh --with-funasr` |
 | OpenAI-compatible API | `openai-api` | cloud, any OpenAI-shape endpoint | quick cloud run; no local GPU needed; up-to-date provider models | opt-in: `bash scripts/setup_models.sh --with-openai-client` |
+| Xiaomi MiMo | `mimo-asr` | cloud, MiMo token-plan gateway | strong Chinese ASR without local compute; billed per audio second | no extra dep (stdlib HTTP) |
 
 Default is `faster-whisper` from `scripts/hardware_profile.py` (field
 `asr_backend_default`). Override globally with env `ASR_BACKEND=funasr` or
@@ -148,6 +149,33 @@ Notes:
 - `language_probability` is reported as `1.0` since OpenAI / DashScope don't
   surface it; `--language` is passed through when set.
 - `--device` / `--compute-type` are ignored (the cloud handles all that).
+
+### Backend D — Xiaomi MiMo (`mimo-asr`, chat-shaped cloud ASR)
+
+`mimo-v2.5-asr` runs behind MiMo's token-plan gateway as a **chat** model: the
+user message must contain ONLY an `input_audio` part (any text part is rejected
+with "ASR request must not include text parts" — the gateway injects the
+prompt), and the reply is plain text with **no timestamps**.
+
+Because of that, the backend cuts the 16k wav on silence-aligned boundaries
+(`--chunk-seconds`, default 30; ffmpeg silencedetect snaps each target cut to a
+real pause within ±6 s so words are not severed), transcribes chunks
+concurrently (`--concurrency`, default 4), and emits each chunk's [start,end]
+as the segment timestamps. Errors 429/5xx retry with backoff.
+
+```bash
+export MIMO_API_KEY=tp-…
+python3 scripts/asr_caption.py --video lecture.mp4 --out-dir runs/lecture \
+  --backend mimo-asr --language zh
+# defaults: --api-base https://token-plan-cn.xiaomimimo.com/v1
+#           --api-model mimo-v2.5-asr  --api-key-env MIMO_API_KEY
+```
+
+Known trade-off: ASR transliterations of English jargon (TileLang →
+"柴油狼"-style homophones) are NOT fixed by `--hotwords` (the gateway injects
+its own prompt). Fix them downstream with an LLM cleanup pass over
+`subtitles.json` (keep timestamps, correct term spellings only) before
+`build_knowledge.py`.
 
 ## Model sizing
 

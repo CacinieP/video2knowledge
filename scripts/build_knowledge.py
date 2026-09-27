@@ -184,6 +184,8 @@ def http_json(url: str, payload: dict, timeout: int = 1800,
 
 
 def ping(host: str) -> bool:
+    if _CLOUD["api_base"]:
+        return True
     try:
         # GET /api/tags (POST not allowed -> 405)
         with urllib.request.urlopen(f"{host}/api/tags", timeout=10) as r:
@@ -194,6 +196,8 @@ def ping(host: str) -> bool:
 
 
 def ask_llm(host: str, model: str, prompt: str) -> str | None:
+    if _CLOUD["api_base"]:
+        return ask_llm_cloud(prompt)
     try:
         r = http_json(f"{host}/api/generate",
                       {"model": model, "prompt": prompt, "stream": False,
@@ -202,6 +206,60 @@ def ask_llm(host: str, model: str, prompt: str) -> str | None:
         return r.get("response", "").strip()
     except (urllib.error.URLError, OSError):
         return None
+
+
+# --- OpenAI-compatible cloud LLM (optional) -----------------------------------
+
+_CLOUD = {"api_base": None, "api_model": None, "api_key": None}
+
+
+def configure_cloud(api_base, api_model, api_key_env) -> None:
+    """Route ask_llm() to an OpenAI-compatible chat endpoint instead of Ollama.
+
+    Works with any OpenAI-shape /chat/completions provider (MiniMax M3, GLM,
+    DeepSeek, self-hosted gateways). Reasoning models' <think>…</think> blocks
+    are stripped. Call once from main() after arg parsing.
+    """
+    if not api_base:
+        return
+    key_env = api_key_env or "OPENAI_API_KEY"
+    key = os.environ.get(key_env, "")
+    if not key:
+        raise SystemExit(
+            f"[err] --api-base needs env var '{key_env}' set with your API key. "
+            f"export {key_env}=… before running.")
+    _CLOUD.update(api_base=api_base.rstrip("/"), api_model=api_model, api_key=key)
+    print(f"[v2k] cloud LLM: model={api_model} base={api_base}", file=sys.stderr)
+
+
+def _strip_think(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def ask_llm_cloud(prompt: str) -> str | None:
+    base, model, key = _CLOUD["api_base"], _CLOUD["api_model"], _CLOUD["api_key"]
+    if not (base and model and key):
+        return None
+    payload = {"model": model, "stream": False, "temperature": 0.3,
+               "max_tokens": 16384,
+               "messages": [{"role": "user", "content": prompt}]}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"{base}/chat/completions", data=data,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {key}"})
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=1800) as r:
+                resp = json.loads(r.read().decode())
+            msg = resp.get("choices", [{}])[0].get("message", {})
+            return _strip_think(msg.get("content") or "")
+        except (urllib.error.HTTPError, urllib.error.URLError,
+                TimeoutError, OSError):
+            if attempt == 1:
+                return None
+            time.sleep(30)
+    return None
 
 
 def _extract_json(text: str) -> dict | None:
@@ -829,7 +887,22 @@ def main() -> int:
                     help="max chars of raw text fed to the model (default 8000; auto-raised "
                          "in merged mode since interleaved audio+visual is the main signal)")
     ap.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
+    ap.add_argument("--api-base", default=os.environ.get("V2K_LLM_API_BASE"),
+                    help="OpenAI-compatible chat endpoint (e.g. https://api.minimaxi.com/v1). "
+                         "Set to use a cloud LLM instead of local Ollama ($V2K_LLM_API_BASE)")
+    ap.add_argument("--api-model", default=os.environ.get("V2K_LLM_API_MODEL"),
+                    help="cloud model id, e.g. MiniMax-M3 (required with --api-base; "
+                         "$V2K_LLM_API_MODEL)")
+    ap.add_argument("--api-key-env", default=os.environ.get("V2K_LLM_API_KEY_ENV", "OPENAI_API_KEY"),
+                    help="env var holding the cloud API key (default OPENAI_API_KEY)")
     args = ap.parse_args()
+
+    if args.api_base and not args.api_model:
+        print("[err] --api-base requires --api-model (e.g. MiniMax-M3)", file=sys.stderr)
+        return 3
+    configure_cloud(args.api_base, args.api_model, args.api_key_env)
+    if _CLOUD["api_base"]:
+        args.model = args.api_model
 
     if not args.subtitles.is_file():
         print(f"[err] subtitles not found: {args.subtitles}", file=sys.stderr)

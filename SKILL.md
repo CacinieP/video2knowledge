@@ -104,7 +104,7 @@ python3 scripts/asr_caption.py \
 Outputs: `OUT/subtitles.{srt,vtt,json}`.
 
 > **Three interchangeable ASR backends (since 2026-09):** pass
-> `--backend {faster-whisper,funasr,openai-api}`. Default is `faster-whisper`.
+> `--backend {faster-whisper,funasr,openai-api,mimo-asr}`. Default is `faster-whisper`.
 > - `faster-whisper` — local Whisper (CTranslate2). Best general English.
 > - `funasr` — Alibaba FunASR. Best **Chinese / multilingual** SOTA
 >   (`--model qwen3-asr` / `paraformer-zh` / `sensevoice-small`).
@@ -113,6 +113,14 @@ Outputs: `OUT/subtitles.{srt,vtt,json}`.
 >   OpenAI Whisper, Groq, self-hosted, your own gateway). Vendor-neutral:
 >   just `--api-base URL --api-model NAME --api-key-env VAR`. One-time:
 >   `bash scripts/setup_models.sh --with-openai-client`.
+> - `mimo-asr` — cloud, Xiaomi MiMo (`mimo-v2.5-asr`) via its OpenAI-compatible
+>   **chat** endpoint (audio-only user messages; text part is rejected — the
+>   prompt is injected server-side). No model timestamps, so the wav is cut on
+>   silence-aligned `--chunk-seconds` (default 30) boundaries and chunk
+>   [start,end] becomes the segment timestamps; `--concurrency` parallelizes
+>   chunks. Defaults: base `https://token-plan-cn.xiaomimimo.com/v1`, model
+>   `mimo-v2.5-asr`, key env `MIMO_API_KEY` (override with the `--api-*` flags).
+>   ASR jargon transliterations are best fixed downstream by an LLM cleanup pass.
 >
 > **Hardware-aware recommendation:** run
 > `python3 scripts/asr_caption.py --recommend` to see whether your machine
@@ -182,6 +190,21 @@ python3 scripts/build_knowledge.py \
   --subtitles OUT/subtitles.json \
   --out-dir OUT --format all
 ```
+
+**Cloud LLM instead of local Ollama:** pass `--api-base <openai-compatible URL>
+--api-model <id> --api-key-env VAR` (env cascade `V2K_LLM_API_BASE` /
+`V2K_LLM_API_MODEL` / `V2K_LLM_API_KEY_ENV`), e.g. MiniMax M3:
+
+```bash
+python3 scripts/build_knowledge.py --subtitles OUT/subtitles.json --out-dir OUT \
+  --api-base https://api.minimaxi.com/v1 --api-model MiniMax-M3 \
+  --api-key-env MINIMAX_API_KEY --char-limit 80000 --format all
+```
+
+Any OpenAI-shape `/chat/completions` endpoint works; reasoning models'
+`<think>…</think>` blocks are stripped automatically. `--char-limit` should be
+raised for long lectures on large-context cloud models (default 8000 targets
+small local models; 80k covers a ~2h lecture on a 200k-context endpoint).
 
 Produces, in `OUT/`:
 

@@ -9,6 +9,10 @@ schema consumed by build_knowledge.py:
                                 (qwen3-asr / paraformer-zh / sensevoice-small).
   • openai-api              — cloud, any OpenAI-compatible ASR endpoint
                                 (DashScope Qwen3-ASR, OpenAI Whisper, Groq, …).
+  • mimo-asr                — cloud, Xiaomi MiMo (mimo-v2.5-asr) via its
+                                OpenAI-compatible chat endpoint; audio-only
+                                chunks cut on silence, chunk bounds used as
+                                segment timestamps.
 
 Pick with --backend; defaults come from the hardware profile. Output schema
 is backend-agnostic so downstream tools do not change.
@@ -38,11 +42,16 @@ Outputs (in --out-dir):
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Callable
 
@@ -259,6 +268,149 @@ def _run_openai_api(args, wav: Path):
     return segs, meta
 
 
+# --- mimo-asr backend (Xiaomi MiMo, chat-shaped cloud ASR) -------------------
+
+MIMO_DEFAULT_BASE = "https://token-plan-cn.xiaomimimo.com/v1"
+MIMO_DEFAULT_MODEL = "mimo-v2.5-asr"
+
+
+def _ffprobe_duration(wav: Path) -> float:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(wav)],
+        capture_output=True, text=True, check=True)
+    return float(out.stdout.strip())
+
+
+def _silence_mids(wav: Path) -> list[float]:
+    """Midpoints of silence intervals (ffmpeg silencedetect) for cut snapping."""
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(wav),
+         "-af", "silencedetect=noise=-32dB:d=0.35", "-f", "null", "-"],
+        capture_output=True, text=True)
+    starts = [float(m) for m in re.findall(r"silence_start:\s*([0-9.]+)", proc.stderr)]
+    ends = [float(m) for m in re.findall(r"silence_end:\s*([0-9.]+)", proc.stderr)]
+    if len(starts) > len(ends):  # trailing silence runs to EOF
+        ends.append(_ffprobe_duration(wav))
+    return sorted((s + e) / 2 for s, e in zip(starts, ends) if e - s >= 0.35)
+
+
+def _chunk_bounds(wav: Path, chunk_sec: float) -> list[tuple[float, float]]:
+    """[start,end) spans of ≤chunk_sec, boundaries snapped to nearby silence."""
+    dur = _ffprobe_duration(wav)
+    mids = _silence_mids(wav)
+    bounds, t = [0.0], 0.0
+    while dur - t > chunk_sec:
+        target = t + chunk_sec
+        window = [m for m in mids if t + chunk_sec * 0.55 <= m <= target + 6.0]
+        cut = min(window, key=lambda m: abs(m - target)) if window else target
+        bounds.append(min(cut, dur))
+        t = cut
+    bounds.append(dur)
+    return [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)
+            if bounds[i + 1] - bounds[i] > 0.5]
+
+
+def _extract_span(wav: Path, start: float, dur: float, dest: Path) -> None:
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(wav),
+         "-ar", "16000", "-ac", "1", str(dest)],
+        check=True)
+
+
+def _mimo_transcribe_chunk(api_base: str, model: str, api_key: str,
+                           path: Path, tries: int = 3) -> str:
+    data = base64.b64encode(path.read_bytes()).decode()
+    payload = {"model": model, "stream": False,
+               "messages": [{"role": "user", "content": [
+                   {"type": "input_audio",
+                    "input_audio": {"data": f"data:audio/wav;base64,{data}",
+                                    "format": "wav"}}]}]}
+    req = urllib.request.Request(
+        f"{api_base}/chat/completions", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {api_key}"})
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                resp = json.loads(r.read().decode())
+            msg = resp.get("choices", [{}])[0].get("message", {})
+            return (msg.get("content") or "").strip()
+        except urllib.error.HTTPError as e:
+            body = e.read().decode()[:200]
+            if e.code in (429, 500, 502, 503, 504) and attempt < tries - 1:
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise RuntimeError(f"mimo-asr HTTP {e.code}: {body}")
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt < tries - 1:
+                time.sleep(5)
+                continue
+            raise
+
+
+def _run_mimo_asr(args, wav: Path):
+    """Xiaomi MiMo ASR (mimo-v2.5-asr) via the OpenAI-compatible chat endpoint.
+
+    The gateway accepts audio-only user messages (a text part is rejected: the
+    prompt is injected server-side) and returns plain text WITHOUT timestamps —
+    so this backend cuts the wav on silence-aligned ≤--chunk-seconds boundaries,
+    transcribes chunks concurrently, and uses each chunk's [start,end] as the
+    segment timestamps. ASR jargon errors (TileLang → transliterations) are
+    better fixed by a downstream cleanup LLM pass than here.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    api_key_env = args.api_key_env or "MIMO_API_KEY"
+    api_key = os.environ.get(api_key_env, "")
+    if not api_key:
+        raise RuntimeError(
+            f"mimo-asr backend needs env var '{api_key_env}' set with your API key. "
+            f"export {api_key_env}=… before running.")
+    api_base = (args.api_base or MIMO_DEFAULT_BASE).rstrip("/")
+    model = args.api_model or MIMO_DEFAULT_MODEL
+    chunk_sec = args.chunk_seconds or 30.0
+    conc = max(1, args.concurrency or 4)
+
+    spans = _chunk_bounds(wav, chunk_sec)
+    total = _ffprobe_duration(wav)
+    print(f"[asr][mimo-asr] model={model} {len(spans)} chunks × ~{chunk_sec:.0f}s "
+          f"(audio {total / 60:.1f} min, concurrency {conc})", file=sys.stderr)
+
+    tmp = wav.parent / f"_mimo_chunks_{wav.stem}"
+    tmp.mkdir(exist_ok=True)
+
+    def one(idx: int):
+        start, end = spans[idx]
+        cpath = tmp / f"chunk_{idx:04d}.wav"
+        _extract_span(wav, start, end - start, cpath)
+        try:
+            text = _mimo_transcribe_chunk(api_base, model, api_key, cpath)
+        finally:
+            cpath.unlink(missing_ok=True)
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        return idx, text
+
+    segs = []
+    with ThreadPoolExecutor(max_workers=conc) as ex:
+        for idx, text in ex.map(one, range(len(spans))):
+            start, end = spans[idx]
+            if text:
+                segs.append({"start": round(start, 2), "end": round(end, 2),
+                             "text": text})
+            if (idx + 1) % 25 == 0:
+                print(f"[asr][mimo-asr] {idx + 1}/{len(spans)} chunks",
+                      file=sys.stderr)
+
+    try:
+        tmp.rmdir()
+    except OSError:
+        pass
+    meta = {"language": args.language or "zh", "language_probability": 1.0,
+            "duration": round(total, 2), "backend": "mimo-asr", "model": model}
+    return segs, meta
+
+
 # Dispatch table — set after the run* functions are defined.
 BACKENDS: dict[str, Callable] = {}
 
@@ -267,6 +419,7 @@ def _register_backends() -> None:
     BACKENDS["faster-whisper"] = _run_faster_whisper
     BACKENDS["funasr"] = _run_funasr
     BACKENDS["openai-api"] = _run_openai_api
+    BACKENDS["mimo-asr"] = _run_mimo_asr
 
 
 _register_backends()
@@ -324,8 +477,15 @@ def _build_parser() -> argparse.ArgumentParser:
                          "qwen3-asr-flash / whisper-1 / any custom model name "
                          "(default $ASR_API_MODEL)")
     ap.add_argument("--api-key-env", default=env_api_key_env,
-                    help="openai-api only: name of env var holding the API key "
+                    help="openai-api / mimo-asr only: name of env var holding the API key "
                          f"(default {env_api_key_env}; $ASR_API_KEY_ENV overrides)")
+    ap.add_argument("--chunk-seconds", type=float,
+                    default=float(os.environ.get("V2K_ASR_CHUNK_SEC", "30")),
+                    help="mimo-asr only: max chunk length in seconds; boundaries snap "
+                         "to silence so words are not cut mid-sentence (default 30)")
+    ap.add_argument("--concurrency", type=int,
+                    default=int(os.environ.get("V2K_ASR_CONCURRENCY", "4")),
+                    help="mimo-asr only: parallel chunk transcriptions (default 4)")
     ap.add_argument("--recommend", action="store_true",
                     help="print a hardware-based backend recommendation and exit "
                          "(does not run ASR; ignores --video/--out-dir).")
