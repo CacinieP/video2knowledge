@@ -148,18 +148,18 @@ def test_coverage():
     check("coverage: 2 of 3 covered", covered == 2 and missing == ["IFRS"])
 
 
-def test_hotwords_cli(tmp: Path):
-    caps = tmp / "captions.json"
+def test_hotwords_cli(tmp_path: Path):
+    caps = tmp_path / "captions.json"
     caps.write_text(json.dumps([
         {"start": 0, "end": 10, "text": "长期股权投资 权益法"},
         {"start": 10, "end": 20, "text": "权益法 适用 IFRS"},
     ], ensure_ascii=False), encoding="utf-8")
-    subs = tmp / "subtitles.json"
+    subs = tmp_path / "subtitles.json"
     subs.write_text(json.dumps({"segments": [
         {"start": 0, "end": 5, "text": "权益法的适用"},
     ]}, ensure_ascii=False), encoding="utf-8")
-    vocab = tmp / "course_hotwords.txt"
-    out = tmp / "ocr_hotwords.txt"
+    vocab = tmp_path / "course_hotwords.txt"
+    out = tmp_path / "ocr_hotwords.txt"
     r = subprocess.run([sys.executable, str(HERE.parent / "scripts" / "hotwords_from_ocr.py"),
                         "--captions", str(caps), "--subtitles", str(subs),
                         "--course-vocab", str(vocab), "--manual", "会计要素,权益法",
@@ -195,17 +195,17 @@ def test_interleaved_note_marker():
           and "换绑" in text and "🖼️画面" in text)
 
 
-def test_merge_cli_roundtrip(tmp: Path):
-    subs = tmp / "subtitles.json"
+def test_merge_cli_roundtrip(tmp_path: Path):
+    subs = tmp_path / "subtitles.json"
     subs.write_text(json.dumps({"segments": [
         {"start": 1.0, "end": 3.0, "text": "现金流量表的结构"},
         {"start": 4.0, "end": 6.0, "text": "经营活动现金流量的列报"},
     ]}, ensure_ascii=False), encoding="utf-8")
-    caps = tmp / "captions.json"
+    caps = tmp_path / "captions.json"
     caps.write_text(json.dumps([
         {"start": 0.0, "end": 10.0, "text": "现金流量表 结构分析 编制基础"},
     ], ensure_ascii=False), encoding="utf-8")
-    out = tmp / "merged.json"
+    out = tmp_path / "merged.json"
     r = subprocess.run([sys.executable, str(HERE.parent / "scripts" / "merge_visual.py"),
                         "--subtitles", str(subs), "--visual", str(caps),
                         "--out", str(out)], capture_output=True, text=True)
