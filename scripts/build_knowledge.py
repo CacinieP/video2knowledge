@@ -874,15 +874,50 @@ def main() -> int:
 
     title = args.title or args.subtitles.stem.replace("_", " ")
     duration = segs[-1]["end"] if segs else 0.0
-    if not args.merged:
-        print(f"[v2k] {len(segs)} segments, {duration:.0f}s; summarizing with {args.model}...",
-              file=sys.stderr)
 
-    llm_cache = _LLMCache(args.out_dir / "build_cache.json", args.model)
-    analysis = build_analysis(args.host, args.model, raw_text, source,
-                              lang=args.lang, char_limit=char_limit,
-                              cache=llm_cache)
-    llm_cache.flush()
+    # Zero recognised speech: a piano-only demo, a silent screen recording, a
+    # music bed. Calling the LLM here is actively harmful — a small model handed
+    # an empty transcript does not return "nothing to summarise", it generates
+    # until it hits the context ceiling. Measured: one such video produced no
+    # output for 9+ minutes and, because ollama serialises requests per model,
+    # blocked every later video in the batch behind it. It also fabricates a
+    # confident summary of a video with no words in it, which is worse than
+    # saying nothing.
+    #
+    # So: skip the model entirely and say so out loud, pointing at Path 1/3 —
+    # the illustrated-notes / VLM path, which is the only one that can produce
+    # anything for a wordless video.
+    #
+    # Test the segment text itself, not raw_text: every raw_text line carries a
+    # "[mm:ss] " prefix, so a transcript of pure whitespace still looks non-empty
+    # ("[00:00]    ".strip() is truthy) and the guard would silently not fire.
+    spoken = "".join((s.get("text") or "").strip() for s in segs)
+    if not segs or not spoken:
+        print(f"[v2k] no speech recognised in {args.subtitles.name} "
+              f"(0 segments) — skipping the LLM.\n"
+              f"      This video has no usable narration; use Path 1/3 "
+              f"(mm_caption.py / build_notes.py) instead.", file=sys.stderr)
+        analysis = {
+            "summary": "**未识别到语音内容。** 本视频没有可用的旁白/讲解，"
+                       "因此无法生成文字总结。这类素材（纯演奏、纯演示、无人声录屏）"
+                       "请改用 Path 1/3：先用 `mm_caption.py --mode dedup --prompt-ocr` "
+                       "读画面，再用 `build_notes.py` 生成图文笔记。",
+            "timeline": "_(无语音时间轴)_",
+            "key_points": "- (无语音内容，无法提炼知识点)",
+            "bullets": "- (无语音内容)",
+            "qa": "- (无语音内容，无法生成问答)",
+            "glossary": "- (无语音内容)",
+        }
+        llm_cache = None
+    else:
+        if not args.merged:
+            print(f"[v2k] {len(segs)} segments, {duration:.0f}s; "
+                  f"summarizing with {args.model}...", file=sys.stderr)
+        llm_cache = _LLMCache(args.out_dir / "build_cache.json", args.model)
+        analysis = build_analysis(args.host, args.model, raw_text, source,
+                                  lang=args.lang, char_limit=char_limit,
+                                  cache=llm_cache)
+        llm_cache.flush()
 
     def as_md(v) -> str:
         """Coerce any analysis value into a markdown string for template/HTML."""
