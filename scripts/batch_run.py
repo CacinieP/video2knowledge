@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import re
 import subprocess
 import sys
@@ -39,6 +38,9 @@ import traceback
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from hardware_profile import default_text_model  # noqa: E402
+
 DEFAULT_HOTWORDS = (
     "会计要素, 资产负债表, 利润表, 现金流量表, 长期股权投资, 权益法, 成本法, "
     "商誉减值, 资产减值, 金融工具, 持有待售, 终止经营, 收入确认, 履约义务, "
@@ -271,10 +273,10 @@ def main() -> int:
     ap.add_argument("--root", required=True, type=Path, help="video library root")
     ap.add_argument("--out-root", type=Path, default=Path("runs/batch"))
     ap.add_argument("--asr-model", default="small")
-    ap.add_argument("--text-model", default=os.environ.get("V2K_TEXT_MODEL", "qwen3.5:4b"),
+    ap.add_argument("--text-model", default=default_text_model(),
                     help="Ollama text model for knowledge build + notes "
-                         "(default qwen3.5:4b; use openbmb/minicpm5:Q4_K_M "
-                         "for a much faster lower-quality batch pass)")
+                         "(default: the profile's text model — "
+                         "openbmb/minicpm5-2b on low/mid)")
     ap.add_argument("--vlm-model", default="openbmb/minicpm-v4.6:latest")
     ap.add_argument("--hotwords", default=DEFAULT_HOTWORDS)
     ap.add_argument("--deck", default="2026注会会计")

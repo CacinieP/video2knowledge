@@ -27,7 +27,7 @@ key frames + raw narration excerpts (clearly marked).
 Usage:
     python3 build_notes.py --subtitles out/subtitles.json \\
         --frames out/frames/frames.json --out-dir out \\
-        --max-frames 12 --describe-frames --model qwen3.5:4b
+        --max-frames 12 --describe-frames --model openbmb/minicpm5-2b
 """
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_knowledge import ask_llm, fmt_mmss, load_subtitles, ping  # noqa: E402
 from extract_frames import cap_by_time  # noqa: E402
+from hardware_profile import default_text_model  # noqa: E402
 
 DESC_PROMPT = (
     "请用中文简要描述这一帧画面（不超过40字）：主体物品、人物动作、屏幕文字或"
@@ -260,9 +261,10 @@ def main() -> int:
     ap.add_argument("--pdf", action="store_true",
                     help="also export notes.pdf (needs fpdf2; CJK font auto-detected,"
                          " override with V2K_PDF_FONT)")
-    ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "qwen3.5:4b"),
+    ap.add_argument("--model", default=default_text_model(),
                     help="Ollama text model for section titles/notes "
-                         "(default qwen3.5:4b; unset behavior degrades gracefully)")
+                         "(default: the profile's text model; unset behavior "
+                         "degrades gracefully)")
     ap.add_argument("--describe-frames", action="store_true",
                     help="also run the VLM on each key frame for a one-line "
                          "画面 description (uses --vlm-model)")

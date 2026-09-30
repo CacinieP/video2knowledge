@@ -15,6 +15,13 @@ context); qwen3.6/3.8 only ship 27b+ so they serve the `max` tier. ModelBest's
 end-side models cover the low tiers: minicpm-v4.6 (1B, ultra-efficient image/
 video understanding, strong CJK OCR) and minicpm5 (text, 688 MB Q4).
 
+Step 2's text model (summary / knowledge points / Q&A) is a SEPARATE field
+(`text`), because that stage only ever reads plain text and never a frame: the
+low tiers get openbmb/minicpm5-2b (2.5B dense, 1.6 GB Q4_K_M, 131K context)
+which averages 53.9 over OpenBMB's 34-benchmark set vs Qwen3.5-4B's 51.1, at
+roughly half the RAM — while the top tiers reuse the VLM pull, since
+qwen3.5/qwen3.8 are unified vision+text, so nothing is downloaded twice.
+
   profile   RAM        GPU            ASR model   compute      VLM
   -------   --------   -------------  ----------  -----------  ----------------------
   tiny      < 6 GB     any            tiny        int8         qwen3.5:0.8b (1.0 GB)
@@ -43,13 +50,13 @@ import sys
 
 # --- thresholds -------------------------------------------------------------
 PROFILES = {
-    "tiny":     {"min_ram": 0,  "asr": "tiny",     "compute": "int8",         "device": "cpu",  "vlm": "qwen3.5:0.8b",                   "note": "极低配/老设备，仅保证能跑"},
-    "low":      {"min_ram": 6,  "asr": "base",     "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.6:latest",    "note": "6-8GB 无独立GPU"},
-    "low-mac":  {"min_ram": 6,  "asr": "small",    "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.6:latest",    "note": "Apple Silicon 6-8GB（Metal 加速抽帧）"},
-    "mid":      {"min_ram": 8,  "asr": "small",    "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.6:latest",    "note": "8-16GB 通用"},
-    "high":     {"min_ram": 16, "asr": "medium",   "compute": "int8_float16", "device": "auto", "vlm": "qwen3.5:4b",                     "note": "16-32GB，可上 medium"},
-    "high-gpu": {"min_ram": 8,  "asr": "large-v3", "compute": "float16",      "device": "cuda", "vlm": "qwen3.5:9b",                     "note": "NVIDIA >=8GB VRAM，CUDA 全速"},
-    "max":      {"min_ram": 32, "asr": "large-v3", "compute": "float16",      "device": "auto", "vlm": "qwen3.8:27b",                    "note": "工作站/服务器 >32GB"},
+    "tiny":     {"min_ram": 0,  "asr": "tiny",     "compute": "int8",         "device": "cpu",  "vlm": "qwen3.5:0.8b",                   "text": "openbmb/minicpm5:Q4_K_M",        "note": "极低配/老设备，仅保证能跑"},
+    "low":      {"min_ram": 6,  "asr": "base",     "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.6:latest",    "text": "openbmb/minicpm5-2b",            "note": "6-8GB 无独立GPU"},
+    "low-mac":  {"min_ram": 6,  "asr": "small",    "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.6:latest",    "text": "openbmb/minicpm5-2b",            "note": "Apple Silicon 6-8GB（Metal 加速抽帧）"},
+    "mid":      {"min_ram": 8,  "asr": "small",    "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.6:latest",    "text": "openbmb/minicpm5-2b",            "note": "8-16GB 通用"},
+    "high":     {"min_ram": 16, "asr": "medium",   "compute": "int8_float16", "device": "auto", "vlm": "qwen3.5:4b",                     "text": "qwen3.5:4b",                     "note": "16-32GB，可上 medium"},
+    "high-gpu": {"min_ram": 8,  "asr": "large-v3", "compute": "float16",      "device": "cuda", "vlm": "qwen3.5:9b",                     "text": "qwen3.5:9b",                     "note": "NVIDIA >=8GB VRAM，CUDA 全速"},
+    "max":      {"min_ram": 32, "asr": "large-v3", "compute": "float16",      "device": "auto", "vlm": "qwen3.8:27b",                    "text": "qwen3.8:27b",                    "note": "工作站/服务器 >32GB"},
 }
 
 
@@ -265,8 +272,35 @@ def detect() -> dict:
         "compute_type": compute,
         "device": prof["device"],
         "vlm_model": prof["vlm"],
+        "text_model": prof["text"],
         "note": prof["note"],
     }
+
+
+# Step 2's text model when detection cannot run at all (stripped container with
+# no /proc and no nvidia-smi): the 2B is the smallest model that still produces
+# a usable summary, so degrade to it rather than to nothing.
+FALLBACK_TEXT_MODEL = "openbmb/minicpm5-2b"
+
+_default_text_model: str | None = None
+
+
+def default_text_model() -> str:
+    """Resolve Step 2's text model: V2K_TEXT_MODEL > profile table > fallback.
+
+    Cached per process — detect() shells out to nvidia-smi (10 s timeout) and
+    the answer cannot change mid-run. Never raises: a failed probe must not
+    stop a run that a flat default would have completed.
+    """
+    global _default_text_model
+    if _default_text_model is None:
+        _default_text_model = os.environ.get("V2K_TEXT_MODEL") or ""
+        if not _default_text_model:
+            try:
+                _default_text_model = detect()["text_model"]
+            except Exception:
+                _default_text_model = FALLBACK_TEXT_MODEL
+    return _default_text_model
 
 
 # --- CLI --------------------------------------------------------------------
@@ -275,7 +309,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
     ap.add_argument("--key", help="print a single field (asr_model, compute_type, "
-                                  "device, vlm_model, profile, ram_gb, os_release)")
+                                  "device, vlm_model, text_model, profile, ram_gb, "
+                                  "os_release)")
     args = ap.parse_args()
     d = detect()
     if args.key:
@@ -300,6 +335,7 @@ def main() -> int:
     print(f"  -> compute_type: {d['compute_type']}")
     print(f"  -> device:       {d['device']}")
     print(f"  -> vlm_model:    {d['vlm_model']}")
+    print(f"  -> text_model:   {d['text_model']}")
     return 0
 
 

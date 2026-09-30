@@ -13,7 +13,7 @@ script still emits artifacts using the raw subtitles (degraded mode, clearly mar
 
 Usage:
     python3 build_knowledge.py --subtitles out/subtitles.json --out-dir out \\
-        --model openbmb/minicpm5:Q4_K_M --format all
+        --model openbmb/minicpm5-2b --format all
 """
 from __future__ import annotations
 
@@ -32,6 +32,12 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_TEMPLATE = Path(__file__).resolve().parent.parent / "assets" / "default-template.md"
+
+try:  # same-directory single source of truth for the Step-2 model choice
+    from hardware_profile import default_text_model
+except ImportError:  # imported as a stray module without scripts/ on sys.path
+    def default_text_model() -> str:
+        return os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm5-2b")
 
 # --- subtitle loading --------------------------------------------------------
 
@@ -590,9 +596,9 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     # each LLM call on a small, accurate context (small/mid models degrade badly
     # on 18k+ char inputs — repeated output, dropped items, bad timestamps).
     # summary is map(summarize)->reduce(summarize).
-    # 9000 (not 4500): qwen3.5:4b handles 9k single-task prompts cleanly and
-    # it halves the call count, so a 3h lecture (~360k chars, 40 chunks) is
-    # tractable while keeping full coverage.
+    # 9000 (not 4500): the default text models (minicpm5-2b, qwen3.5:4b) handle
+    # 9k single-task prompts cleanly and it halves the call count, so a 3h
+    # lecture (~360k chars, 40 chunks) is tractable while keeping full coverage.
     CHUNK = 9000
     long_mode = len(sub) > CHUNK * 1.5
     chunks = _chunk_lines(sub, CHUNK) if long_mode else [sub]
@@ -816,11 +822,11 @@ def main() -> int:
                     help="all = knowledge+html+csv (plus docx+pdf when python-docx/"
                          "fpdf2 are installed; explicit docx/pdf fail loudly "
                          "when the lib is missing)")
-    ap.add_argument("--model", default=os.environ.get("V2K_TEXT_MODEL", "qwen3.5:4b"),
-                    help="Ollama text model for summarization/QA (default qwen3.5:4b, "
-                         "unified vision+text so it can share the Path-1 VLM pull; "
-                         "set V2K_TEXT_MODEL or pass --model openbmb/minicpm5:Q4_K_M "
-                         "for faster/low-RAM runs)")
+    ap.add_argument("--model", default=default_text_model(),
+                    help="Ollama text model for summarization/QA (default: the "
+                         "profile's text model — openbmb/minicpm5-2b on low/mid, "
+                         "the VLM pull itself on high tiers; set V2K_TEXT_MODEL "
+                         "or pass --model to override)")
     ap.add_argument("--title", default=None, help="document title (default: video basename)")
     ap.add_argument("--lang", choices=["zh", "en"], default="zh",
                     help="prompt/output language for summary/QA (default zh; set to en "

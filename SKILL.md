@@ -132,9 +132,10 @@ the summary as context. Chunk-level LLM responses are cached in
 restarting. In batches, `batch_run.py` accumulates OCR terms into
 `course_hotwords.txt` so later videos transcribe better, and `--asr-verify`
 re-transcribes a video whose OCR-term coverage fell below 50 %.
-The default text model is `qwen3.5:4b` (unified vision+text — on `high` machines
-the same pull serves Path 1 and Step 2; override with
-`--model openbmb/minicpm5:Q4_K_M` for low-RAM/fast runs).
+The default text model follows the same hardware profile: `openbmb/minicpm5-2b`
+(2.5B dense, 1.6 GB) on `low`/`low-mac`/`mid`, and the Path 1 VLM pull itself on
+`high`+ (qwen3.5/qwen3.8 are unified vision+text, so nothing is downloaded
+twice). Override with `--model`, or `V2K_TEXT_MODEL=` to pin one for every run.
 Quality measurement: `scripts/recall_check.py --run-dir <dir> --draft` emits a
 golden must-have list (terms / both-channel numbers / timeline coverage) that a
 human prunes in minutes; `--golden` then scores produced artifacts against it

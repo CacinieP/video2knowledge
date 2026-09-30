@@ -29,15 +29,24 @@ python3 scripts/asr_caption.py --video v.mp4 --out-dir o --model large-v3 --devi
 
 ## Profile table
 
-| Profile | Trigger | ASR model | compute | device | VLM | Notes |
-|---|---|---|---|---|---|---|
-| `tiny` | RAM < 6 GB | `tiny` | int8 | cpu | `qwen3.5:0.8b` (~1.0 GB) | 老设备/上网本，仅保证能跑，字幕较粗 |
-| `low` | 6–8 GB, no dGPU | `base` | int8 | cpu | `minicpm-v4.6` | 通用低配 |
-| `low-mac` | 6–8 GB, Apple Silicon | `small` | int8 | cpu | `minicpm-v4.6` | M1/A 系列芯片，Metal 加速抽帧 |
-| `mid` | 8–16 GB | `small` | int8 | cpu | `minicpm-v4.6` | **主流笔记本**（含 8GB MacBook） |
-| `high` | 16–32 GB | `medium` | int8_float16 (int8 on CPU-only¹) | auto | `qwen3.5:4b` | 16G+，可上 medium |
-| `high-gpu` | NVIDIA ≥ 8 GB VRAM | `large-v3` | float16 | **cuda** | `qwen3.5:9b` | 独显直通，CUDA 全速 |
-| `max` | RAM > 32 GB | `large-v3` | float16 | auto | `qwen3.8:27b` | 工作站/服务器 |
+| Profile | Trigger | ASR model | compute | device | VLM | text model | Notes |
+|---|---|---|---|---|---|---|---|
+| `tiny` | RAM < 6 GB | `tiny` | int8 | cpu | `qwen3.5:0.8b` (~1.0 GB) | `minicpm5:Q4_K_M` (688 MB) | 老设备/上网本，仅保证能跑，字幕较粗 |
+| `low` | 6–8 GB, no dGPU | `base` | int8 | cpu | `minicpm-v4.6` | `minicpm5-2b` (1.6 GB) | 通用低配 |
+| `low-mac` | 6–8 GB, Apple Silicon | `small` | int8 | cpu | `minicpm-v4.6` | `minicpm5-2b` | M1/A 系列芯片，Metal 加速抽帧 |
+| `mid` | 8–16 GB | `small` | int8 | cpu | `minicpm-v4.6` | `minicpm5-2b` | **主流笔记本**（含 8GB MacBook） |
+| `high` | 16–32 GB | `medium` | int8_float16 (int8 on CPU-only¹) | auto | `qwen3.5:4b` | `qwen3.5:4b` ² | 16G+，可上 medium |
+| `high-gpu` | NVIDIA ≥ 8 GB VRAM | `large-v3` | float16 | **cuda** | `qwen3.5:9b` | `qwen3.5:9b` ² | 独显直通，CUDA 全速 |
+| `max` | RAM > 32 GB | `large-v3` | float16 | auto | `qwen3.8:27b` | `qwen3.8:27b` ² | 工作站/服务器 |
+
+¹ CTranslate2's CPU backend rejects `int8_float16` at load, so a CPU-only
+machine is auto-downgraded to plain `int8`.
+
+² The text column repeats the VLM on purpose: qwen3.5/qwen3.8 are unified
+vision+text, so those tiers pull one model and Step 2 reuses it. Only the
+tiers whose VLM is vision-only or too small to summarise need a second model —
+hence `minicpm5-2b` below `high`. Override per run with `--model`, or pin
+globally with `V2K_TEXT_MODEL=`.
 
 ### Model lineup (refreshed 2026-08)
 
@@ -51,9 +60,12 @@ python3 scripts/asr_caption.py --video v.mp4 --out-dir o --model large-v3 --devi
   too.
 - **ModelBest end-side models** (openbmb): `minicpm-v4.6` (1B, 1.6 GB,
   ultra-efficient image/video understanding, strong CJK OCR) holds the
-  low/mid tiers; `minicpm5` (688 MB Q4) is the low-RAM text-model override.
-  `minicpm-v4.5`/`minicpm-o4.5` (8B, GPT-4o-class omni) are solid
-  alternatives where a 6 GB-class download fits.
+  low/mid VLM slots; `minicpm5-2b` (2.5B dense, 1.6 GB Q4_K_M, 131K context)
+  is the text model for those same tiers — 53.9 average over OpenBMB's
+  34-benchmark set vs Qwen3.5-4B's 51.1, at half the RAM — and `minicpm5`
+  (688 MB Q4) stays the `tiny`-tier text pick. `minicpm-v4.5`/`minicpm-o4.5`
+  (8B, GPT-4o-class omni) are solid alternatives where a 6 GB-class download
+  fits.
 - Legacy picks (`moondream`, `qwen2.5vl:3b/7b`) still work if already pulled,
   but new machines should use the lineup above.
 - ASR: the whisper ladder (tiny→large-v3) is unchanged — faster-whisper
@@ -128,16 +140,16 @@ ASR stays on CPU and Ollama uses whatever backend it was built with.
 
 ## Common machines → expected profile
 
-| Machine | Profile | ASR | VLM |
-|---|---|---|---|
-| 4 GB old laptop / Raspberry Pi 4 | `tiny` | tiny | qwen3.5:0.8b |
-| 8 GB Intel MacBook / ThinkPad | `mid` | small | minicpm-v4.6 |
-| 8 GB M1 / M2 MacBook Air | `mid` | small | minicpm-v4.6 |
-| 8 GB iPhone-class (A18 Pro) Mac | `mid` | small | minicpm-v4.6 |
-| 16 GB M2/M3 Pro, 16 GB PC | `high` | medium | qwen3.5:4b |
-| 24–32 GB M-Max / workstation | `max` | large-v3 | qwen3.8:27b |
-| Any + RTX 3060/4060 (8 GB) | `high-gpu` | large-v3 | qwen3.5:9b |
-| Any + RTX 3090/4090 (24 GB) | `high-gpu` | large-v3 | qwen3.5:9b |
+| Machine | Profile | ASR | VLM | text |
+|---|---|---|---|---|
+| 4 GB old laptop / Raspberry Pi 4 | `tiny` | tiny | qwen3.5:0.8b | minicpm5:Q4_K_M |
+| 8 GB Intel MacBook / ThinkPad | `mid` | small | minicpm-v4.6 | minicpm5-2b |
+| 8 GB M1 / M2 MacBook Air | `mid` | small | minicpm-v4.6 | minicpm5-2b |
+| 8 GB iPhone-class (A18 Pro) Mac | `mid` | small | minicpm-v4.6 | minicpm5-2b |
+| 16 GB M2/M3 Pro, 16 GB PC | `high` | medium | qwen3.5:4b | qwen3.5:4b |
+| 24–32 GB M-Max / workstation | `max` | large-v3 | qwen3.8:27b | qwen3.8:27b |
+| Any + RTX 3060/4060 (8 GB) | `high-gpu` | large-v3 | qwen3.5:9b | qwen3.5:9b |
+| Any + RTX 3090/4090 (24 GB) | `high-gpu` | large-v3 | qwen3.5:9b | qwen3.5:9b |
 
 ## Tuning the profiles
 

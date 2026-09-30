@@ -122,8 +122,8 @@ bash scripts/setup_models.sh
 
 ```bash
 python3 scripts/hardware_profile.py
-# 例：8GB MacBook → profile=mid → whisper-small + minicpm-v4.6
-# 例：31GB Win11 台式机 → profile=high → whisper-medium + qwen3.5:4b
+# 例：8GB MacBook → profile=mid → whisper-small + minicpm-v4.6 + minicpm5-2b
+# 例：31GB Win11 台式机 → profile=high → whisper-medium + qwen3.5:4b（视觉+文本共用一次拉取）
 ```
 
 > 💡 **下载慢 / 卡住？** 这些模型从 Ollama / PyPI 拉取，国内网络可设置代理提速：
@@ -167,7 +167,7 @@ python3 scripts/asr_caption.py \
   --video your_video.mp4 --out-dir runs/demo --language zh
 
 # 第二步：字幕 → 知识文档 / HTML / 卡片 CSV
-# （首次运行会自动拉取文本模型 qwen3.5:4b，约 3.4 GB，稍等）
+# （首次运行会自动拉取文本模型：mid 及以下档为 openbmb/minicpm5-2b，约 1.6 GB，稍等）
 python3 scripts/build_knowledge.py \
   --subtitles runs/demo/subtitles.json --out-dir runs/demo --format all
 
@@ -225,7 +225,7 @@ python3 scripts/build_knowledge.py \
 python3 scripts/gen_apkg.py --csv "$RUN/cards.csv" --out "$RUN/cards.apkg" --deck "幻灯片知识卡"
 ```
 
-默认文本模型为 **qwen3.5:4b**（统一视觉+文本，high 档机器上与路径 1 的 VLM 共用一次拉取）；低配/求快可 `--model openbmb/minicpm5:Q4_K_M`。详见 `references/path3-fusion.md`。
+默认文本模型跟随 `hardware_profile.py` 的档位（`low`/`low-mac`/`mid` 档为 **openbmb/minicpm5-2b**，2.5B dense、约 1.6 GB、131K 上下文；`high` 及以上直接复用路径 1 的 VLM 权重，视觉+文本共用一次拉取）。`tiny` 档降到 `openbmb/minicpm5:Q4_K_M`（688 MB）。覆盖方式：`--model`，或 `V2K_TEXT_MODEL=` 全局固定。详见 `references/path3-fusion.md`。
 
 ### D. 图文笔记（关键帧插图 × 旁白要点）
 
@@ -304,17 +304,19 @@ position of leading the...
 
 不用手动挑模型大小——`scripts/hardware_profile.py` 会检测并匹配：
 
-| Profile | 触发 | ASR 模型 | VLM（2026-08 阵容） | 典型机型 |
-|---|---|---|---|---|
-| `tiny` | RAM < 6 GB | tiny | qwen3.5:0.8b (1.0 GB) | 树莓派 / 4G 老笔记本 |
-| `low` | 6–8 GB 无独显 | base | minicpm-v4.6 (1.6 GB) | 上网本 |
-| `low-mac` | 6–8 GB Apple Silicon | small | minicpm-v4.6 | M1 MacBook Air |
-| `mid` | 8–16 GB | small | minicpm-v4.6 | **主流笔记本** |
-| `high` | 16–32 GB | medium | qwen3.5:4b (3.4 GB) | M2/M3 Pro、16G PC |
-| `high-gpu` | NVIDIA ≥ 8 GB 显存 | large-v3 | qwen3.5:9b (6.6 GB) | RTX 3060/4060/3090（CUDA+float16 全速）|
-| `max` | RAM > 32 GB | large-v3 | qwen3.8:27b (18 GB) | 工作站 / 服务器 |
+| Profile | 触发 | ASR 模型 | VLM（2026-08 阵容） | 文本模型 | 典型机型 |
+|---|---|---|---|---|---|
+| `tiny` | RAM < 6 GB | tiny | qwen3.5:0.8b (1.0 GB) | minicpm5:Q4_K_M (688 MB) | 树莓派 / 4G 老笔记本 |
+| `low` | 6–8 GB 无独显 | base | minicpm-v4.6 (1.6 GB) | minicpm5-2b (1.6 GB) | 上网本 |
+| `low-mac` | 6–8 GB Apple Silicon | small | minicpm-v4.6 | minicpm5-2b | M1 MacBook Air |
+| `mid` | 8–16 GB | small | minicpm-v4.6 | minicpm5-2b (1.6 GB) | **主流笔记本** |
+| `high` | 16–32 GB | medium | qwen3.5:4b (3.4 GB) | 同 VLM ¹ | M2/M3 Pro、16G PC |
+| `high-gpu` | NVIDIA ≥ 8 GB 显存 | large-v3 | qwen3.5:9b (6.6 GB) | 同 VLM ¹ | RTX 3060/4060/3090（CUDA+float16 全速）|
+| `max` | RAM > 32 GB | large-v3 | qwen3.8:27b (18 GB) | 同 VLM ¹ | 工作站 / 服务器 |
 
-模型阵容（2026-08 刷新）：**qwen3.5** 是当代唯一有完整小尺寸阶梯（0.8b/2b/4b/9b，统一视觉+文本，256K 上下文）的 Qwen 代际；**qwen3.8**（原生视频理解）只出 27b+，服务 `max` 档；**面壁 minicpm-v4.6**（1B 端侧效率王牌，CJK OCR 强）守 low/mid 档，**minicpm5**（688 MB）是低配文本模型覆写。旧选型（moondream / qwen2.5vl）已退役为 legacy。
+¹ qwen3.5/qwen3.8 是视觉+文本统一模型，这些档位只拉一份权重，第二步直接复用。
+
+模型阵容（2026-08 刷新）：**qwen3.5** 是当代唯一有完整小尺寸阶梯（0.8b/2b/4b/9b，统一视觉+文本，256K 上下文）的 Qwen 代际；**qwen3.8**（原生视频理解）只出 27b+，服务 `max` 档；**面壁 minicpm-v4.6**（1B 端侧效率王牌，CJK OCR 强）守 low/mid 档的视觉位，**minicpm5-2b**（2.5B dense、1.6 GB、OpenBMB 34 项基准均分 53.9，高于 Qwen3.5-4B 的 51.1 而内存约一半）守同档的文本位，**minicpm5**（688 MB）是 `tiny` 档文本模型。旧选型（moondream / qwen2.5vl）已退役为 legacy。
 
 NVIDIA 有短路逻辑：≥8GB 显存直接走 CUDA，不受总内存限制。全部可用环境变量（`ASR_DEFAULT_MODEL=`、`VLM_MODEL=`）或 CLI flag 覆盖。完整说明见 [`references/hardware-profiles.md`](references/hardware-profiles.md)。
 
@@ -364,7 +366,7 @@ venv 固定建在仓库根 `.venv/`。最稳妥的方式是用 `setup_models.sh`
 <details>
 <summary><b>Q: 跑 <code>build_knowledge.py</code> 卡很久 / 报模型找不到？</b></summary>
 
-第二步会调用**文本模型**（默认 `qwen3.5:4b`，约 3.4 GB，用于摘要/知识点/Q&A），首次运行时 Ollama 会自动拉取，需要联网和等待。提前手动拉可避免等待意外：`ollama pull qwen3.5:4b`。低配/求快换小模型：`--model openbmb/minicpm5:Q4_K_M`；想再提质：`--model qwen3.5:9b`。
+第二步会调用**文本模型**（用于摘要/知识点/Q&A），默认由 `hardware_profile.py` 按档位给出：`mid` 及以下为 `openbmb/minicpm5-2b`（约 1.6 GB），`high` 及以上复用 VLM 权重。首次运行时 Ollama 会自动拉取，需要联网和等待；提前手动拉可避免等待意外：`ollama pull openbmb/minicpm5-2b`。想再提质：`--model qwen3.5:9b`。
 </details>
 
 <details>
@@ -433,7 +435,7 @@ video2knowledge/
 ## 🧠 设计取舍
 
 - **全本地推理**：用 Ollama 跑 VLM/文本模型、faster-whisper 跑 ASR，视频内容不离开本机，隐私可控、留痕可复现。
-- **小模型优先，按档位自适应**：2026-08 阵容里 0.8b–4b 级模型覆盖 6–32GB 机器，8GB 机器跑得动；文本模型默认 qwen3.5:4b（统一视觉+文本，与路径 1 共用一次拉取）。Q&A 在过小模型上偶有偏差时，换 `--model qwen3.5:9b` 即可显著改善。
+- **小模型优先，按档位自适应**：2026-08 阵容里 0.8b–4b 级模型覆盖 6–32GB 机器，8GB 机器跑得动；文本模型同样走档位表——`mid` 及以下用 minicpm5-2b（1.6 GB），`high` 及以上复用 VLM 权重，不额外下载。Q&A 在过小模型上偶有偏差时，换 `--model qwen3.5:9b` 即可显著改善。
 - **CLI 优先，可被 skill 调用**：所有脚本带 `--help`、不硬编码路径、幂等。
 
 ---

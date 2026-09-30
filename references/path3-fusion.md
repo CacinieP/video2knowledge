@@ -165,14 +165,18 @@ chunk-boundary duplicates. QA items are deduped and capped as Q/A *pairs*
 
 ## Text model sizing
 
-The default text model is **`qwen3.5:4b`** (unified vision+text — on `high`
-machines the same pull serves Path 1). On an 8 GB machine a 1B model degrades
-badly on the ~20k-char fused context (repeated output, dropped items); a 3–4B
-reads the content and reasons about it. `qwen3.5:4b` loads in ~3.4 GB, leaving
-headroom on 16 GB; use `qwen3.5:2b` (~2.7 GB) for 8 GB machines. For low-RAM
-runs, override with `--model openbmb/minicpm5:Q4_K_M` (faster but
-shallower). The map-reduce chunking keeps each call small enough that even 1B
-stays usable on short videos.
+Step 2's text model is picked from the same hardware profile, in a field
+separate from the VLM because this stage never sees a frame. The default is
+**`openbmb/minicpm5-2b`** (2.5B dense, 1.6 GB Q4_K_M, 131K context) on
+`low`/`low-mac`/`mid`, and the VLM pull itself on `high`+ — qwen3.5/qwen3.8
+are unified vision+text, so the top tiers download one model, not two. On an
+8 GB machine a 1B model degrades badly on the ~20k-char fused context
+(repeated output, dropped items); the 2B reads the content and reasons about
+it, and it averaged 53.9 over OpenBMB's 34-benchmark set against Qwen3.5-4B's
+51.1 at roughly half the RAM. Below the `tiny` tier the table drops to
+`openbmb/minicpm5:Q4_K_M` (688 MB, shallower). The map-reduce chunking keeps
+each call small enough that even the 688 MB model stays usable on short
+videos. Pin a different one with `--model` or `V2K_TEXT_MODEL=`.
 
 ## End-to-end example (everything local)
 
