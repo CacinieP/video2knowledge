@@ -105,6 +105,13 @@ else
 fi
 
 # --- 2. python venv + faster-whisper -----------------------------------------
+# av<19 is a hard pin, not a preference: faster-whisper 1.2.1 (latest) calls
+# av.open(..., metadata_errors="ignore"), and PyAV 19 removed that keyword, so
+# an unpinned install resolves av 19 and EVERY transcription dies with
+#   TypeError: open() got an unexpected keyword argument 'metadata_errors'
+# Verified on Windows/cp313: av 14.2.0 / 15.1.0 / 16.1.0 / 17.0.1 / 18.1.0 all
+# accept it; 19.0.0 does not. Drop the pin once faster-whisper ships a release
+# that works against PyAV 19+.
 if ! have uv && ! have python3 && ! have python; then
   log "ERROR: need uv or python3 to build venv"; exit 1
 fi
@@ -116,7 +123,7 @@ if [[ ! -d "$VENV_DIR" ]]; then
     # may be an MSYS/mingw build whose venvs (bin/ layout, no ctranslate2
     # wheels) cannot host faster-whisper. uv sidesteps that entirely.
     uv venv "$VENV_DIR" >/dev/null
-    uv pip install --python "$(venv_python)" --quiet "faster-whisper>=1.0.3" genanki python-docx fpdf2
+    uv pip install --python "$(venv_python)" --quiet "faster-whisper>=1.0.3" "av<19" genanki python-docx fpdf2
   else
     PY_BIN="$(command -v python3 || command -v python)"
     case "$(uname -s)" in
@@ -135,7 +142,7 @@ if [[ ! -d "$VENV_DIR" ]]; then
     esac
     "$PY_BIN" -m venv "$VENV_DIR"
     "$(venv_python)" -m pip install --quiet --upgrade pip
-    "$(venv_python)" -m pip install --quiet "faster-whisper>=1.0.3" genanki python-docx fpdf2
+    "$(venv_python)" -m pip install --quiet "faster-whisper>=1.0.3" "av<19" genanki python-docx fpdf2
   fi
   log "Installed faster-whisper + genanki into venv"
 else
@@ -145,9 +152,9 @@ VENV_PY="$(venv_python)" || { log "ERROR: venv dir exists but no python found in
 "$VENV_PY" -c "import faster_whisper" 2>/dev/null || {
   log "venv missing faster-whisper — installing..."
   if have uv; then
-    uv pip install --python "$VENV_PY" --quiet "faster-whisper>=1.0.3" genanki python-docx fpdf2
+    uv pip install --python "$VENV_PY" --quiet "faster-whisper>=1.0.3" "av<19" genanki python-docx fpdf2
   else
-    "$VENV_PY" -m pip install --quiet "faster-whisper>=1.0.3" genanki python-docx fpdf2
+    "$VENV_PY" -m pip install --quiet "faster-whisper>=1.0.3" "av<19" genanki python-docx fpdf2
   fi
 }
 
