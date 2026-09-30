@@ -37,6 +37,7 @@ import datetime as dt
 import html
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -71,6 +72,28 @@ def http_generate(host: str, payload: dict, timeout: int = 420,
             time.sleep(30)
 
 
+def supports_vision(host: str, model: str) -> bool:
+    """True if `model` declares the 'vision' capability (ollama /api/show).
+
+    Needed because the --vlm-model fallback below reuses the TEXT model, and
+    on the low/mid profiles that model is text-only (minicpm5-2b, qwen3.5:0.8b
+    on tiny). Handing a text-only model a base64 image returns HTTP 500 for
+    every key frame, and one description per frame in a tight retry loop is
+    enough to take the ollama server down mid-run (observed: 23/23 failures
+    followed by connection-refused for the rest of the batch).
+    """
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{host}/api/show", data=json.dumps({"model": model}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            caps = json.loads(r.read().decode()).get("capabilities") or []
+        return "vision" in caps
+    except Exception:
+        return False  # unknown -> assume no vision, degrade instead of storming
+
+
 def describe_frame(host: str, model: str, jpg: Path) -> str:
     """One-line VLM description of a key frame (used for the 画面 line)."""
     b64 = base64.b64encode(jpg.read_bytes()).decode()
@@ -81,6 +104,17 @@ def describe_frame(host: str, model: str, jpg: Path) -> str:
     if "</think>" in text:  # some models leak the reasoning chain
         text = text.rsplit("</think>", 1)[1].strip()
     return text.replace("\n", " ")
+
+
+def _strip_line_label(line: str) -> str:
+    """Drop a leading '第一行：' / 'Line 1:' label the model echoed back.
+
+    The prompt asks for two lines AND says "no extra prefixes"; a small model
+    cannot hold both and copies the labels verbatim, which otherwise ships as
+    "## [00:04] 第一行：视谱能力训练".
+    """
+    return re.sub(r"^\s*(?:第[一二]行|line\s*\d+)\s*[:：]\s*", "", line,
+                  flags=re.IGNORECASE).strip()
 
 
 def section_note(host: str, model: str, narration: str, lang: str) -> tuple[str, str]:
@@ -104,9 +138,17 @@ def section_note(host: str, model: str, narration: str, lang: str) -> tuple[str,
     if not resp or not resp.strip():
         return "", " / ".join(narration.splitlines()[:2])[:120]
     lines = [l.strip() for l in resp.strip().splitlines() if l.strip()]
+    # Small models echo the "第一行：/第二行：" labels from the prompt verbatim
+    # (the prompt asks for two lines AND says "no extra prefixes"; a 2B model
+    # cannot hold both). Strip them, or every section title ships as
+    # "## [00:04] 第一行：视谱能力训练".
+    lines = [_strip_line_label(l) for l in lines]
+    lines = [l for l in lines if l]
     if len(lines) >= 2:
         return lines[0][:24], " ".join(lines[1:])[:300]
-    return lines[0][:24], " / ".join(narration.splitlines()[:2])[:120]
+    if lines:
+        return lines[0][:24], " / ".join(narration.splitlines()[:2])[:120]
+    return "", " / ".join(narration.splitlines()[:2])[:120]
 
 
 def resolve_frame_file(frames_json: Path, file_ref: str) -> Path:
@@ -308,6 +350,12 @@ def main() -> int:
     vlm_model = None
     if args.describe_frames:
         vlm_model = args.vlm_model or args.model
+        if vlm_model and not supports_vision(args.host, vlm_model):
+            print(f"[notes] {vlm_model} is text-only — skipping 画面 descriptions "
+                  f"instead of failing once per key frame. Pass --vlm-model "
+                  f"<multimodal>, e.g. openbmb/minicpm-v4.6:latest, to enable them.",
+                  file=sys.stderr)
+            vlm_model = None
         if not ping(args.host):
             vlm_model = None
     if not model:

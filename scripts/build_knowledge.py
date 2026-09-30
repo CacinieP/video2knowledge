@@ -194,11 +194,21 @@ def ping(host: str) -> bool:
 
 
 def ask_llm(host: str, model: str, prompt: str) -> str | None:
+    # num_predict is a HARD cap, not a tuning knob. Without it ollama generates
+    # until EOS or until num_ctx is full (16k here), and a small reasoning model
+    # (minicpm5-2b, qwen3.5:0.8b) on a large or degenerate prompt — a 90k-char
+    # subtitle dump, or a run with zero segments — can degenerate into an
+    # unbounded chain that runs for hours. ollama serialises requests per model,
+    # so that one call blocks every later stage AND every later video in a batch.
+    # 2048 comfortably covers the JSON/QA payloads these prompts ask for;
+    # overflow truncates the JSON, which _extract_json already tolerates.
+    cap = int(os.environ.get("V2K_NUM_PREDICT", "2048"))
     try:
         r = http_json(f"{host}/api/generate",
                       {"model": model, "prompt": prompt, "stream": False,
                        "think": False,
-                       "options": {"temperature": 0.3, "num_ctx": 16384}})
+                       "options": {"temperature": 0.3, "num_ctx": 16384,
+                                   "num_predict": cap}})
         return r.get("response", "").strip()
     except (urllib.error.URLError, OSError):
         return None
