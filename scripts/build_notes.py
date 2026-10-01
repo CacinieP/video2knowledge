@@ -47,8 +47,14 @@ from extract_frames import cap_by_time  # noqa: E402
 from hardware_profile import default_text_model  # noqa: E402
 
 DESC_PROMPT = (
-    "请用中文简要描述这一帧画面（不超过40字）：主体物品、人物动作、屏幕文字或"
-    "演示步骤。只输出描述本身，不要推理过程，不要英文。"
+    "请用中文描述这一帧中**可用于学习的教学信息**（不超过40字），按优先级：\n"
+    "1) 乐谱/板书/公式/图表上的具体内容（如音名、和弦、拍号、标注）；\n"
+    "2) 屏幕文字、字幕、界面上的教学提示；\n"
+    "3) 演示的器材或操作步骤。\n"
+    "**不要描述人物动作或外观**（如“女士弹琴”“手势讲解”“老师微笑”）——"
+    "这些对复习没有帮助。画面里没有可读教学信息时，"
+    "就写画面主题（如“钢琴演奏画面，无字幕”）。"
+    "只输出描述本身，不要推理过程，不要英文。"
 )
 
 
@@ -219,10 +225,23 @@ def build_sections(host: str, model: str | None, vlm_model: str | None,
 
 # --- rendering ----------------------------------------------------------------
 
-def render_markdown(sections: list[dict], meta: dict, out_dir: Path) -> str:
-    lines = [f"# {meta['title']} — 图文笔记", "",
+def render_markdown(sections: list[dict], meta: dict, out_dir: Path,
+                     verbatim: bool = True) -> str:
+    """Render the illustrated note.
+
+    `verbatim=False` produces the distilled view: the same nodes, the same
+    frames, the same LLM notes, minus the quoted narration. Measured over 295
+    nodes, the blockquotes are 53% of the characters — a reader revising wants
+    the knowledge, and a reader cross-checking the teacher's exact wording
+    wants the quote. Producing both from one pass costs no extra model calls.
+    """
+    suffix = "" if verbatim else " · 纯享版"
+    lines = [f"# {meta['title']} — 图文笔记{suffix}", "",
              f"> 来源 `{meta['video']}` · 时长 {meta['duration']} · "
              f"{len(sections)} 个关键节点 · {meta['date']}", ""]
+    if not verbatim:
+        lines += ["> 精简版：只保留画面与提炼要点，原始逐字引用见 "
+                  "`notes.md`。", ""]
     for sec in sections:
         ts = fmt_mmss(sec["t"])
         heading = sec["title"] or "画面节点"
@@ -240,7 +259,7 @@ def render_markdown(sections: list[dict], meta: dict, out_dir: Path) -> str:
         if sec["note"]:
             lines.append(sec["note"])
             lines.append("")
-        if sec["excerpt"]:
+        if verbatim and sec["excerpt"]:
             lines.append(f"> 原声：{sec['excerpt'][:200]}")
             lines.append("")
     return "\n".join(lines)
@@ -379,10 +398,17 @@ def main() -> int:
             "video": Path(fdata.get("video", "unknown")).name,
             "duration": fmt_mmss(duration), "date": dt.date.today().isoformat()}
 
-    md = render_markdown(sections, meta, args.out_dir)
+    md = render_markdown(sections, meta, args.out_dir, verbatim=True)
     md_path = args.out_dir / "notes.md"
     md_path.write_text(md, encoding="utf-8")
     print(f"[ok] illustrated note (md) -> {md_path}")
+
+    # Distilled twin: same nodes and frames, no quoted narration. Generated
+    # from the sections already in hand, so it costs no extra model call.
+    md_light = render_markdown(sections, meta, args.out_dir, verbatim=False)
+    md_light_path = args.out_dir / "notes-distilled.md"
+    md_light_path.write_text(md_light, encoding="utf-8")
+    print(f"[ok] distilled note (md) -> {md_light_path}")
 
     html_path = args.out_dir / "notes.html"
     html_path.write_text(render_html(sections, meta), encoding="utf-8")
@@ -394,10 +420,16 @@ def main() -> int:
             if args.docx:
                 p = md_to_docx(md, args.out_dir / "notes.docx", base_dir=args.out_dir)
                 print(f"[ok] illustrated note (docx) -> {p}")
+                p = md_to_docx(md_light, args.out_dir / "notes-distilled.docx",
+                               base_dir=args.out_dir)
+                print(f"[ok] distilled note (docx) -> {p}")
             if args.pdf:
                 p = md_to_pdf(md, args.out_dir / "notes.pdf",
                               base_dir=args.out_dir, title=str(meta["title"]))
                 print(f"[ok] illustrated note (pdf) -> {p}")
+                p = md_to_pdf(md_light, args.out_dir / "notes-distilled.pdf",
+                              base_dir=args.out_dir, title=str(meta["title"]))
+                print(f"[ok] distilled note (pdf) -> {p}")
         except RuntimeError as e:
             print(f"[warn] export skipped: {e}", file=sys.stderr)
     return 0
