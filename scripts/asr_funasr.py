@@ -31,6 +31,11 @@ the GPU for Ollama instead of contending with it.
 Install (FunASR does NOT co-install cleanly with the main venv — it pins an old
 tokenizers and pulls its own torch, so give it its own environment):
 
+    bash scripts/setup_models.sh --with-funasr
+
+That builds a separate .venv-funasr and prints the exact `run python as` line.
+The equivalent by hand, if you would rather not use the script:
+
     python3 -m venv .venv-funasr
     ./.venv-funasr/bin/pip install "tokenizers>=0.21" funasr torch
     ./.venv-funasr/bin/pip install --no-deps funasr        # after deps resolve

@@ -119,6 +119,15 @@ bash scripts/setup_models.sh
 
 想建在别处？用环境变量 `VENV_DIR=...` 覆盖。
 
+**可选的 ASR 后端要显式加**（默认一个都不装）：
+
+| Flag | 装什么 | 什么时候需要 |
+|---|---|---|
+| `--with-funasr` | 独立的 `.venv-funasr`（自带 torch，约 2.5 GB） | 想用 Paraformer-zh（中文领域同音词 44% → 94%） |
+| `--with-openai-client` | 主 venv 里的 `openai` SDK | 想用 `--backend openai-api` / `mimo-asr` |
+
+两者都是**光加 flag 才会装**。`--with-funasr` 单独建 venv 而不是塞进主 venv，正是因为 funasr 钉死的 tokenizers 和自己那份 torch 跟 faster-whisper 的 ctranslate2 解析不到一起。另外注意：`openai-api` / `mimo-asr` 会把你的**音频上传到指定的第三方端点**——这是显式的隐私取舍，不是默认行为。`bash scripts/setup_models.sh --help` 可以看完整用法。
+
 看看它给你选了什么档位：
 
 ```bash
@@ -174,8 +183,12 @@ python3 scripts/asr_caption.py \
   --video your_video.mp4 --out-dir runs/demo --language zh
 
 #   中文更准的选择：FunASR Paraformer（领域同音词 44% → 94%，跑 CPU，12-16× 实时）
-#   需要独立 venv —— funasr 的 tokenizers 依赖装不进主环境
-python3 .venv-funasr/bin/python scripts/asr_funasr.py \
+#   需要独立 venv —— funasr 的 tokenizers 依赖装不进主环境。
+#   这一步会建好 .venv-funasr 并打印 run python as:
+bash scripts/setup_models.sh --with-funasr
+
+#   然后用它自己的解释器跑（路径按上面打印的来）
+./.venv-funasr/bin/python scripts/asr_funasr.py \
   --video your_video.mp4 --out-dir runs/demo --language zh \
   --hotwords "背谱,视谱,音阶,琶音"
 

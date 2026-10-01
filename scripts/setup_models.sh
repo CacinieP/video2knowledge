@@ -6,6 +6,11 @@
 # Path 2 (ASR):        faster-whisper installed into a local venv; model weights
 #                      auto-download on first transcription to ~/.cache/huggingface
 #
+# Optional ASR backends are opt-in flags, never defaults — see below. They cost
+# real downloads (funasr pulls its own torch, ~2.5 GB) and the cloud one sends
+# audio off the host, so neither may be something a plain `setup_models.sh`
+# decides for you.
+#
 # Cross-platform: works in bash on Linux, macOS, and Windows (Git Bash / MSYS).
 # Never activates the venv (bin/ vs Scripts/ layout differs); every python call
 # goes through an absolute interpreter path resolved once below.
@@ -18,17 +23,53 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # venv lives in the repo/run root next to this script — wherever the skill is
 # installed (e.g. ~/.agents/skills/video2knowledge), not a hardcoded HOME path.
 VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
+# FunASR gets its own venv: it pins an old tokenizers and drags in its own torch,
+# which does not resolve cleanly alongside faster-whisper's ctranslate2 stack.
+FUNASR_VENV_DIR="${FUNASR_VENV_DIR:-$ROOT/.venv-funasr}"
 
 # --- cross-platform helpers ---------------------------------------------------
 log() { printf '[setup] %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# --- opt-in extras (zero behavior change unless requested) ------------------
+# Parsed before anything else so `--help` works even on a machine with no
+# ollama and no venv, both of which the default path hard-requires further down.
+WITH_FUNASR=0
+WITH_OPENAI_CLIENT=0
+for arg in "$@"; do
+  case "$arg" in
+    --with-funasr)        WITH_FUNASR=1 ;;
+    --with-openai-client) WITH_OPENAI_CLIENT=1 ;;
+    --without-funasr|--without-openai-client) : ;;   # accepted, no-op
+    -h|--help)
+      cat <<'USAGE'
+Usage: bash scripts/setup_models.sh [--with-funasr] [--with-openai-client]
+
+Default (no flags) — unchanged from earlier versions:
+  faster-whisper + genanki + docx/pdf libs, the profile VLM, ffmpeg check.
+
+Optional ASR backends (never installed unless asked):
+  --with-funasr         build a separate .venv-funasr for asr_funasr.py
+                        (Paraformer-zh). Pulls its own torch (~2.5 GB).
+                        94% vs 44% on Mandarin domain homophones.
+  --with-openai-client  add the openai>=1 SDK to the main venv, required by
+                        asr_caption.py --backend openai-api / mimo-asr.
+                        NOTE: those backends upload your audio to a third party.
+USAGE
+      exit 0
+      ;;
+    *) log "unknown arg '$arg' (ignored — see --help)" ;;
+  esac
+done
+
 # Windows venvs use Scripts/, POSIX venvs use bin/. Resolve once.
+# $1 = venv dir (defaults to the main one).
 venv_python() {
-  if [ -x "$VENV_DIR/Scripts/python.exe" ]; then
-    printf '%s\n' "$VENV_DIR/Scripts/python.exe"
-  elif [ -x "$VENV_DIR/bin/python" ]; then
-    printf '%s\n' "$VENV_DIR/bin/python"
+  local d="${1:-$VENV_DIR}"
+  if [ -x "$d/Scripts/python.exe" ]; then
+    printf '%s\n' "$d/Scripts/python.exe"
+  elif [ -x "$d/bin/python" ]; then
+    printf '%s\n' "$d/bin/python"
   else
     return 1
   fi
@@ -193,6 +234,69 @@ fi
   fi
 }
 
+# --- 2c. opt-in ASR backend dependencies ------------------------------------
+# Both are opt-in and neither is on the default path. They are here because the
+# scripts that need them already point at these exact flags in their error
+# messages — asr_caption.py says "Run scripts/setup_models.sh
+# --with-openai-client", and asr_funasr.py's docstring carries the venv recipe.
+# Until this existed, both pointed at a flag the script did not have.
+
+FUNASR_PY=""
+if [ "$WITH_OPENAI_CLIENT" = "1" ]; then
+  if "$VENV_PY" -c "import openai" 2>/dev/null; then
+    log "openai client: already installed (skipping)"
+  else
+    log "Installing openai>=1 client SDK (for --backend openai-api / mimo-asr)..."
+    if have uv; then
+      uv pip install --python "$VENV_PY" --quiet "openai>=1.0" \
+        || log "WARN: openai install failed — the cloud ASR backends will not run"
+    else
+      "$VENV_PY" -m pip install --quiet "openai>=1.0" \
+        || log "WARN: openai install failed — the cloud ASR backends will not run"
+    fi
+  fi
+  log "  reminder: openai-api / mimo-asr send your AUDIO to a third-party endpoint"
+fi
+
+if [ "$WITH_FUNASR" = "1" ]; then
+  # A separate venv, not the main one. funasr pins an old tokenizers and pulls
+  # its own torch; resolving that next to faster-whisper's ctranslate2 stack is
+  # what motivated the split in the first place.
+  if [ -n "$(venv_python "$FUNASR_VENV_DIR" || true)" ]; then
+    log "funasr venv exists: $FUNASR_VENV_DIR (skipping create)"
+  else
+    log "Creating funasr venv at $FUNASR_VENV_DIR (separate from the main venv)..."
+    if have uv; then
+      uv venv "$FUNASR_VENV_DIR" >/dev/null
+    else
+      "$(profile_python || command -v python3 || command -v python)" -m venv "$FUNASR_VENV_DIR"
+    fi
+    FUNASR_PY="$(venv_python "$FUNASR_VENV_DIR")"
+    # The order matters: the resolver needs the tokenizers floor satisfied
+    # before funasr's own pin is satisfiable, hence two passes.
+    log "Installing funasr + torch (~2.5 GB, one time)..."
+    if have uv; then
+      uv pip install --python "$FUNASR_PY" --quiet "tokenizers>=0.21" torch funasr || {
+        log "WARN: funasr install failed. See the manual recipe in the"
+        log "      asr_funasr.py module docstring if this is a platform with"
+        log "      no funasr wheel (try: uv pip install funasr --no-binary :all:)."
+      }
+      uv pip install --python "$FUNASR_PY" --quiet --no-deps funasr 2>/dev/null || true
+    else
+      "$FUNASR_PY" -m pip install --quiet "tokenizers>=0.21" torch funasr || {
+        log "WARN: funasr install failed (see the recipe in asr_funasr.py)."
+      }
+      "$FUNASR_PY" -m pip install --quiet --no-deps funasr 2>/dev/null || true
+    fi
+  fi
+  FUNASR_PY="$(venv_python "$FUNASR_VENV_DIR" || true)"
+  if [ -n "$FUNASR_PY" ] && "$FUNASR_PY" -c "import funasr" 2>/dev/null; then
+    log "funasr: ready"
+  else
+    log "WARN: funasr still not importable — asr_funasr.py will fail until it is."
+  fi
+fi
+
 # --- 3. ffmpeg ---------------------------------------------------------------
 if ! have ffmpeg; then
   log "ERROR: ffmpeg not found. Install:"
@@ -212,3 +316,18 @@ cat <<EOF
   run python as : $VENV_PY
   Override with : VLM_MODEL=... ASR_DEFAULT_MODEL=... bash setup_models.sh
 EOF
+
+if [ "$WITH_OPENAI_CLIENT" = "1" ]; then
+  cat <<EOF
+  opt-in        : openai client installed in the main venv
+                  asr_caption.py --backend openai-api|mimo-asr
+                  (UPLOADS audio to the endpoint you name)
+EOF
+fi
+if [ "$WITH_FUNASR" = "1" ]; then
+  cat <<EOF
+  opt-in        : funasr venv at $FUNASR_VENV_DIR
+                  run python as : ${FUNASR_PY:-(not created)}
+                  $FUNASR_PY "$HERE/asr_funasr.py" --video in.mp4 --out-dir out --language zh
+EOF
+fi

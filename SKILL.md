@@ -132,14 +132,17 @@ python3 scripts/asr_caption.py \
 tokenizers pin does not co-install with the main environment):
 
 ```bash
+bash scripts/setup_models.sh --with-funasr     # builds .venv-funasr, prints the path
+
 python3 .venv-funasr/bin/python scripts/asr_funasr.py \
   --video VIDEO --out-dir OUT --language zh --hotwords "背谱,视谱,音阶"
 ```
 
 Cloud engines exist for hosts that cannot transcribe locally, and are opt-in —
-they upload the audio to a third party. `--backend openai-api` takes any
-OpenAI-compatible endpoint; `--backend mimo-asr` is for chat-shaped gateways that
-return no timestamps. See `references/path2-asr.md`.
+they upload the audio to a third party. `bash scripts/setup_models.sh
+--with-openai-client` adds the `openai` SDK it needs; `--backend openai-api`
+takes any OpenAI-compatible endpoint and `--backend mimo-asr` is for
+chat-shaped gateways that return no timestamps. See `references/path2-asr.md`.
 
 Outputs: `OUT/subtitles.{srt,vtt,json}`.
 
@@ -378,7 +381,7 @@ EOF
 
 | Script | Purpose |
 |---|---|
-| `scripts/setup_models.sh` | Idempotent model/venv setup (profile-aware) |
+| `scripts/setup_models.sh` | Idempotent model/venv setup (profile-aware). Default installs faster-whisper + genanki + the profile VLM. Optional backends are **opt-in flags, never defaults**: `--with-funasr` (separate `.venv-funasr` for Paraformer) and `--with-openai-client` (adds the `openai` SDK for the cloud backends, which upload audio) |
 | `scripts/hardware_profile.py` | Detect machine → recommend ASR/VLM/backend profile |
 | `scripts/extract_frames.py` | Frame sampling: `--mode interval` (uniform fps) or `--mode dedup` (dense sample + dHash dedup with **settle-frame** selection, blank-frame gate, **tail-frame emission** — the final state of each similar-run is kept so sub-threshold micro-edits before a slide change are not lost, `--tail-eps` to tune; optional `--hash-mode dual` dHash+aHash, and cluster-stratified `--max-frames` budget; at `--hash-size 16` use `--dedup-hamming 20`) → `frames.json` |
 | `scripts/mm_caption.py` | Path 1: VLM captioning → `captions.{srt,json}`; `--mode dedup --prompt-ocr` for slide tables/formulas, with an OCR text-change gate that drops frames whose text is ≥90% similar to the last kept one |
