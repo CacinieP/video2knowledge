@@ -158,6 +158,30 @@ VENV_PY="$(venv_python)" || { log "ERROR: venv dir exists but no python found in
   fi
 }
 
+# --- 2b. CUDA runtime for faster-whisper ------------------------------------
+# The PyPI ctranslate2 wheel links against CUDA 12, but the runtime libraries
+# are NOT bundled: on Windows they are not on PATH even with a working driver,
+# so `--device cuda` dies with
+#   RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+# The nvidia-*-cu12 wheels put them under site-packages/nvidia/<pkg>/bin, which
+# asr_caption.py adds to the DLL search path itself. Installing them here is
+# what turns a 4-7x slower CPU run into a GPU one. ~1.5 GB, no-op on a CPU-only
+# box (hardware_profile reports cuda_ok=false and stays on CPU).
+if "$VENV_PY" -c "import glob,os,sys; sys.exit(0 if glob.glob(os.path.join(sys.prefix,'Lib','site-packages','nvidia','cublas','bin','cublas64_12.dll')) or glob.glob(os.path.join(sys.prefix,'lib','python*','site-packages','nvidia','cublas','lib','libcublas.so*')) else 1)" 2>/dev/null; then
+  log "CUDA runtime: already present (skipping)"
+elif have nvidia-smi; then
+  log "NVIDIA GPU detected — installing the CUDA 12 runtime for faster-whisper..."
+  if have uv; then
+    uv pip install --python "$VENV_PY" --quiet nvidia-cublas-cu12 nvidia-cudnn-cu12 2>/dev/null \
+      || log "WARN: CUDA runtime install failed — ASR will fall back to CPU (slower but works)"
+  else
+    "$VENV_PY" -m pip install --quiet nvidia-cublas-cu12 nvidia-cudnn-cu12 2>/dev/null \
+      || log "WARN: CUDA runtime install failed — ASR will fall back to CPU (slower but works)"
+  fi
+else
+  log "No NVIDIA GPU — skipping the CUDA runtime (CPU ASR)"
+fi
+
 # docx/pdf export libs (optional at runtime; build_knowledge --format docx/pdf,
 # build_notes --docx/--pdf degrade with a hint when absent)
 "$VENV_PY" -c "import docx, fpdf" 2>/dev/null || {

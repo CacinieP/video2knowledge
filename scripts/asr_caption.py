@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -101,6 +102,48 @@ def load_hotwords(spec: str | None) -> str | None:
     return "、".join(dict.fromkeys(terms)) or None  # dedupe, keep order
 
 
+def _prepend_nvidia_dll_dirs() -> None:
+    """Windows only: put the pip-installed CUDA runtime on the DLL search path.
+
+    CTranslate2 needs cublas64_12.dll / cudnn, which the `nvidia-cublas-cu12`
+    and `nvidia-cudnn-cu12` wheels place under
+    `site-packages/nvidia/<pkg>/bin` — NOT on PATH by default. Without this,
+    `--device cuda` dies with
+
+        RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+
+    even on a machine with a perfectly good driver. os.add_dll_directory is
+    process-scoped, which is exactly the lifetime we need.
+    """
+    if os.name != "nt":
+        return
+    import glob
+    import site
+    roots: list[str] = []
+    for getter in (site.getsitepackages, lambda: [site.getusersitepackages()]):
+        try:
+            roots.extend(getter())
+        except Exception:
+            pass
+    for base in (sys.prefix, sys.base_prefix):
+        roots.append(os.path.join(base, "Lib", "site-packages"))
+    seen: set[str] = set()
+    added = 0
+    for root in roots:
+        for d in glob.glob(os.path.join(root, "nvidia", "*", "bin")):
+            if d in seen or not os.path.isdir(d):
+                continue
+            seen.add(d)
+            try:
+                os.add_dll_directory(d)
+                added += 1
+            except Exception:
+                pass
+    if added:
+        print(f"[asr] added {added} NVIDIA runtime dir(s) to the DLL search path",
+              file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="faster-whisper ASR -> timestamped subtitles")
     ap.add_argument("--video", required=True, type=Path)
@@ -114,6 +157,9 @@ def main() -> int:
     ap.add_argument("--compute-type", default=DEFAULT_COMPUTE,
                     help=f"int8 | int8_float16 | float16 | float32 "
                          f"(default {DEFAULT_COMPUTE}, from profile)")
+    ap.add_argument("--keep-wav", action="store_true",
+                    help="keep the 16kHz mono wav intermediate "
+                         "(default: delete it once subtitles.* are written)")
     ap.add_argument("--hotwords", default=None,
                     help="domain terms to bias transcription: comma/space "
                          "separated, or @terms.txt (one per line). Passed to "
@@ -132,6 +178,9 @@ def main() -> int:
               f"Suggested for this profile: {DEFAULT_MODEL}.", file=sys.stderr)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.device == "cuda":
+        _prepend_nvidia_dll_dirs()
 
     print("[asr] extracting 16k mono wav...", file=sys.stderr)
     wav = extract_wav(args.video, args.out_dir)
@@ -169,6 +218,22 @@ def main() -> int:
         json.dumps({"language": info.language, "language_probability": info.language_probability,
                     "duration": info.duration, "segments": segs},
                    ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # The 16 kHz mono wav is a ~115 MB/hour intermediate that nothing downstream
+    # reads — subtitles.* is the only thing the rest of the pipeline consumes,
+    # and it is already written. Left in place it dominates the run dir: a
+    # 61.5-hour course library leaves ~7 GB of dead WAVs. batch_run.py's own
+    # docstring has always claimed "wav deleted after", so this closes the gap
+    # between the documented and the actual behaviour. --keep-wav opts out for
+    # anyone re-transcribing the same audio without re-extracting it.
+    if args.keep_wav:
+        print(f"[asr] kept {wav.name} ({wav.stat().st_size/1e6:.0f} MB)",
+              file=sys.stderr)
+    else:
+        try:
+            wav.unlink()
+        except OSError as e:
+            print(f"[warn] could not remove {wav}: {e}", file=sys.stderr)
 
     print(f"[ok] {len(segs)} segments -> {args.out_dir}/subtitles.{{srt,vtt,json}}")
     return 0

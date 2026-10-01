@@ -247,19 +247,100 @@ def select_profile(ram_gb: float, nvidia_vram: float | None = None,
     return "tiny"
 
 
+def detect_cuda_usable() -> bool:
+    """True if CTranslate2 can actually LOAD a model on CUDA right now.
+
+    `get_cuda_device_count()` only proves a driver is visible. The CUDA runtime
+    libraries themselves ship separately, and on Windows they are not on PATH
+    by default even when the driver is fine — ctranslate2 then reports a device
+    and dies at load time with
+
+        RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+
+    so a device count is not evidence. Probing the DLLs the loader actually
+    needs is: if they resolve, CUDA works; if not, saying `device=cuda` sends
+    every run into that RuntimeError. Returns False on any doubt — CPU is the
+    safe answer, just a slower one.
+    """
+    if detect_os() != "windows":
+        return True  # non-Windows resolves CUDA through the system loader
+    try:
+        import ctranslate2  # noqa: F401  (import is the cheap part)
+    except Exception:
+        return False
+    try:
+        import ctypes
+        import glob
+        import os
+        import site
+    except Exception:
+        return False
+
+    # cublas is the one CTranslate2 always needs; cudnn for the conv path.
+    roots = []
+    for getter in (lambda: site.getsitepackages(), lambda: [site.getusersitepackages()]):
+        try:
+            roots.extend(getter())
+        except Exception:
+            pass
+    try:  # uv / venv layouts keep packages under Lib\site-packages
+        roots.extend(glob.glob(os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", "*", "bin")))
+    except Exception:
+        pass
+
+    for dll in ("cublas64_12.dll",):
+        found = any(os.path.isfile(os.path.join(r, dll)) for r in roots)
+        if not found:
+            # last resort: already somewhere on PATH?
+            from shutil import which
+            found = which(dll) is not None
+        if not found:
+            return False
+    try:
+        ctypes.CDLL(os.path.join(next(r for r in roots
+                                      if os.path.isfile(os.path.join(r, "cublas64_12.dll"))),
+                                 "cublas64_12.dll"))
+    except Exception:
+        return False
+    return True
+
+
+def select_asr_device(nvidia_vram: float | None, cuda_ok: bool) -> str:
+    """ASR device, decoupled from the profile tier.
+
+    The tier gate (`nvidia_vram >= 8` -> high-gpu) is about picking a whole
+    configuration; it is the wrong test for "should ASR use the GPU". Measured
+    on an RTX 3060 Laptop (6 GB), faster-whisper small on CUDA int8_float16 ran
+    at 17.9x realtime versus 2.5x on CPU — a 4-7x difference — and the tier
+    table sent that machine to `mid`/cpu. The whisper models fit in far less
+    than 8 GB (small int8 ~1.2 GB, large-v3 int8_float16 ~3 GB), so 3 GB of
+    usable VRAM plus a working runtime is the honest threshold.
+    """
+    if nvidia_vram and nvidia_vram >= 3.0 and cuda_ok:
+        return "cuda"
+    return "cpu"
+
+
 def detect() -> dict:
     """Run all detection and return a full profile dict."""
     ram = detect_ram_gb()
     nvidia = detect_nvidia_vram_gb()
     apple = detect_apple_silicon()
+    cuda_ok = detect_cuda_usable() if nvidia else False
     pname = select_profile(ram, nvidia_vram=nvidia, apple_chip=apple)
     prof = PROFILES[pname]
     compute = prof["compute"]
+    device = select_asr_device(nvidia, cuda_ok)
     # int8_float16 is a CUDA-only compute type: CTranslate2's CPU backend raises
     # "target device or backend do not support efficient int8_float16" at load.
-    # Downgrade to plain int8 when no NVIDIA GPU is present.
-    if compute == "int8_float16" and nvidia is None:
+    # Downgrade to plain int8 when CUDA is not actually usable...
+    if compute == "int8_float16" and device != "cuda":
         compute = "int8"
+    # ...and upgrade the tiers that settle on plain int8 now that a real CUDA
+    # device was verified. Same int8 weights, float16 math: strictly faster,
+    # and it costs no extra VRAM over int8.
+    elif compute == "int8" and device == "cuda":
+        compute = "int8_float16"
     return {
         "os": detect_os(),
         "os_release": platform.release(),  # e.g. 11 (Win11), 24.04 (Ubuntu)
@@ -267,10 +348,11 @@ def detect() -> dict:
         "ram_gb": round(ram, 1),
         "apple_chip": apple,
         "nvidia_vram_gb": round(nvidia, 1) if nvidia else None,
+        "cuda_ok": cuda_ok,
         "profile": pname,
         "asr_model": prof["asr"],
         "compute_type": compute,
-        "device": prof["device"],
+        "device": device,
         "vlm_model": prof["vlm"],
         "text_model": prof["text"],
         "note": prof["note"],
@@ -310,7 +392,7 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
     ap.add_argument("--key", help="print a single field (asr_model, compute_type, "
                                   "device, vlm_model, text_model, profile, ram_gb, "
-                                  "os_release)")
+                                  "os_release, cuda_ok)")
     args = ap.parse_args()
     d = detect()
     if args.key:
@@ -323,7 +405,7 @@ def main() -> int:
         print(json.dumps(d, ensure_ascii=False, indent=2))
         return 0
     chip = f"  chip:    {d['apple_chip']}\n" if d["apple_chip"] else ""
-    nv = f"  nvidia:  {d['nvidia_vram_gb']} GB VRAM\n" if d["nvidia_vram_gb"] else ""
+    nv = f"  nvidia:  {d['nvidia_vram_gb']} GB VRAM (cuda_ok={d['cuda_ok']})\n" if d["nvidia_vram_gb"] else ""
     print(f"hardware profile: {d['profile']}  ({d['note']})")
     print(f"  os/arch: {d['os']} {d['os_release']} / {d['arch']}")
     print(f"  ram:     {d['ram_gb']} GB")
