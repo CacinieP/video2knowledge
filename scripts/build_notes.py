@@ -158,6 +158,26 @@ def section_note(host: str, model: str, narration: str, lang: str) -> tuple[str,
     return "", " / ".join(narration.splitlines()[:2])[:120]
 
 
+# --- node density ------------------------------------------------------------
+
+# One node per NODE_SECONDS of video, clamped to [NODE_MIN, NODE_MAX].
+#
+# Density is the single number deciding whether a note feels complete or patchy,
+# and the *floor* is the part that bites. This went 1-per-4min -> 1-per-90s with
+# a floor of 8, and both looked fine in isolation while under-serving most of a
+# real library: measured over 306 videos / 61.5 h the mean clip is 12.1 min, so
+# the floor pinned the majority of the library to 8 nodes however long the video
+# ran. Raising the rate alone would not have moved those; the floor had to.
+NODE_SECONDS = 45
+NODE_MIN = 12
+NODE_MAX = 60
+
+
+def auto_node_budget(duration_s: float) -> int:
+    """How many illustrated nodes a video of `duration_s` should get."""
+    return max(NODE_MIN, min(NODE_MAX, round(duration_s / NODE_SECONDS)))
+
+
 def resolve_frame_file(frames_json: Path, file_ref: str) -> Path:
     """Locate a frame image from its recorded path.
 
@@ -313,10 +333,10 @@ def main() -> int:
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--max-frames", type=int, default=0,
                     help="key-frame cap for the note (default 0 = AUTO: ~one "
-                         "node per 90s of video, clamped 8-48 — a 3h "
-                         "lecture gets 48 nodes, a 45-min one gets 30; an "
-                         "explicit number fixes it). Cluster-stratified: every "
-                         "change burst keeps its settled frame")
+                         "node per 45s of video, clamped 12-60 — a 12-min "
+                         "clip gets 16 nodes, a 41-min one 55, a 3h lecture "
+                         "60; an explicit number fixes it). Cluster-stratified: "
+                         "every change burst keeps its settled frame")
     ap.add_argument("--docx", action="store_true",
                     help="also export notes.docx (needs python-docx)")
     ap.add_argument("--pdf", action="store_true",
@@ -355,19 +375,11 @@ def main() -> int:
     # cluster-stratified cap (shared with extract_frames.py): every change
     # burst keeps its settled final frame, remaining budget split proportionally
     # — an animation burst no longer starves isolated key slides of sections.
-    #
-    # --max-frames 0 (default) = AUTO: one node per ~45s of video, clamped
-    # 12-60. The old 1-per-4min gave a 37min lecture only 9 illustrated nodes,
-    # and the 1-per-90s that followed still floored at 8 — which is most of a
-    # typical clip: measured over a 306-video / 61.5h library the mean length
-    # is 12.1 min, so the floor bound the majority of the library to 8 nodes
-    # no matter how long the video ran. The floor is what had to move, not the
-    # ceiling: at 45s a 12-min clip gets 16 nodes and a 41-min one gets 55.
     if args.max_frames <= 0:
         duration = segs[-1]["end"] if segs else 0.0
-        args.max_frames = max(12, min(60, round(duration / 45)))
+        args.max_frames = auto_node_budget(duration)
         print(f"[notes] auto node budget: {args.max_frames} "
-              f"(~1 per 45s of {fmt_mmss(duration)})", file=sys.stderr)
+              f"(~1 per {NODE_SECONDS}s of {fmt_mmss(duration)})", file=sys.stderr)
     keep_ts = set(cap_by_time([fr["t"] for fr in frames], args.max_frames))
     frames = [fr for fr in frames if fr["t"] in keep_ts]
 

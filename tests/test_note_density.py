@@ -22,9 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import build_notes as bn  # noqa: E402
 
 
-def budget(duration_s: float) -> int:
-    """Mirror the auto rule in build_notes.main()."""
-    return max(12, min(60, round(duration_s / 45)))
+# The real function, not a copy of the formula. An earlier version of this file
+# re-implemented the rule inline, which made every assertion below a tautology:
+# the test stayed green no matter what build_notes.py actually did — and when
+# the code moved to 45s the `--help` text silently kept advertising 90s.
+budget = bn.auto_node_budget
 
 
 # --------------------------------------------------------------------------
@@ -79,3 +81,44 @@ def test_denser_than_the_previous_rule():
     for mins in (6, 10, 12, 20, 30, 45):
         old = max(8, min(48, round(mins * 60 / 90)))
         assert budget(mins * 60) > old, f"{mins}min did not get denser"
+
+
+# --------------------------------------------------------------------------
+# the constants themselves, and the help text that describes them
+# --------------------------------------------------------------------------
+
+def test_constants_are_the_documented_ones():
+    assert (bn.NODE_SECONDS, bn.NODE_MIN, bn.NODE_MAX) == (45, 12, 60)
+
+
+def test_help_text_agrees_with_the_code():
+    """The drift this guards: code said 45s, `--help` still said 90s.
+
+    Nothing else catches it. The behaviour tests pass either way, the note looks
+    fine, and the only symptom is that a user reading `--help` picks a density
+    that is not what they get.
+    """
+    import subprocess
+    import sys as _sys
+
+    out = subprocess.run(
+        [_sys.executable, str(Path(bn.__file__)), "--help"],
+        capture_output=True, text=True, timeout=60,
+    ).stdout
+    help_text = " ".join(out.split())
+
+    assert f"{bn.NODE_SECONDS}s" in help_text, \
+        f"--help does not mention the {bn.NODE_SECONDS}s rate"
+    assert f"{bn.NODE_MIN}-{bn.NODE_MAX}" in help_text, \
+        f"--help does not mention the {bn.NODE_MIN}-{bn.NODE_MAX} clamp"
+
+    # the stale numbers, if either ever reappears
+    assert "per 90s" not in help_text
+    assert "8-48" not in help_text
+
+
+def test_printed_budget_uses_the_constant():
+    """The stderr line must not hardcode a second copy of the rate."""
+    src = Path(bn.__file__).read_text(encoding="utf-8")
+    assert "~1 per {NODE_SECONDS}s" in src
+    assert "~1 per 45s" not in src
