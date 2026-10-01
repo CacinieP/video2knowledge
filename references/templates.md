@@ -19,11 +19,34 @@ with generated content; unknown placeholders are left intact so you can spot typ
 | `{{glossary}}` | Markdown bullet list of terms |
 | `{{meta}}` | Free-form metadata line (segment count, model) |
 
-## Built-in default
+## Built-in templates
 
-`assets/default-template.md` ships a generic structure: title → metadata quote →
-summary → timeline → key points → QA → glossary → meta. It is used when
+`assets/default-template.md` is the generic default (title → metadata quote →
+summary → timeline → key points → QA → glossary → meta). It is used when
 `--template` is not passed.
+
+`assets/templates/` ships three ready-to-use course templates:
+
+| File | Shape | Use when |
+|---|---|---|
+| `course-notes.md` | summary → 必看要点 → 知识要点 → 时间轴 → 画面要点 → 自测题 → 术语 → 复习清单 | the general case: a lecture you will study afterwards |
+| `revision-cheatsheet.md` | TL;DR → 核心清单 → 易混对照 → 自测, timeline collapsed in `<details>` | last-minute review; you only want the load-bearing 10% |
+| `tutorial-steps.md` | 目标 → 操作步骤 → 参数与要点 → 画面 → 时间轴 → 常见问题 → 术语 → 自检 | software / DAW / instrument walkthroughs, where the reader follows along |
+
+```bash
+python3 scripts/build_knowledge.py \
+  --subtitles runs/lec/subtitles.json --out-dir runs/lec \
+  --template assets/templates/revision-cheatsheet.md --format all
+```
+
+Pick per batch, not per video — a course should keep one shape so the notes
+stack. Everything outside `{{placeholders}}` is kept verbatim, so a template can
+carry its own scaffolding (checklists, `<details>` blocks, instructions to the
+reader) around the generated content.
+
+> Tip: pass `--title` while batch-processing. `{{source}}` is the *subtitle*
+> file's name (`subtitles.json`), so without `--title` the header reads
+> `来源: subtitles.json`; `{{title}}` is the one that carries the real name.
 
 ## Custom templates
 
