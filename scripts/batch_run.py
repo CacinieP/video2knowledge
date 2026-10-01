@@ -184,6 +184,8 @@ class Batch:
         if n == 0:
             (run_dir / ".failed").write_text("asr: 0 segments\n", encoding="utf-8")
             raise RuntimeError("ASR produced 0 segments (no speech track?)")
+        if not self.args.no_homophone_fix:
+            self.fix_homophones(video, run_dir, lg)
         wav = run_dir / "audio_16k.wav"
         if wav.exists():  # ~31 KB/s — do not keep 193 h of it
             wav.unlink()
@@ -200,6 +202,43 @@ class Batch:
         if self.args.asr_backend == "funasr":
             return []
         return ["--model", self.args.asr_model]
+
+    def fix_homophones(self, video: Path, run_dir: Path, lg: Path) -> None:
+        """Repair domain homophones before anything downstream reads the text.
+
+        Runs here, immediately after ASR and before merge/build/notes, because
+        every artifact downstream quotes this text verbatim — a misheard 爬音
+        otherwise propagates into doc headings, Anki cards and note quotes.
+        Also resyncs subtitles.srt/.vtt, which would otherwise keep the
+        uncorrected spelling.
+        """
+        cmd = [self.py, str(HERE / "fix_homophones.py"),
+               "--subtitles", str(run_dir / "subtitles.json")]
+        if self.args.homophone_glossary:
+            cmd += ["--glossary", self.args.homophone_glossary]
+        for w in self.args.homophone_block:
+            cmd += ["--block", w]
+        rc = self.try_run(cmd, lg)
+        if rc == 0:
+            rep = run_dir / "homophone_fixes.json"
+            if rep.is_file():
+                try:
+                    n = len(__import__("json").loads(rep.read_text(encoding="utf-8"))
+                            .get("changes", []))
+                    if n:
+                        log("A", f"homophone fix: {n} correction(s) — {video}")
+                except Exception:
+                    pass
+        elif rc == 1:
+            # corrections were found but at least one could not be applied;
+            # the transcript is still valid, so keep going but say so loudly
+            log("A", f"WARN: homophone fix hit offset drift for {run_dir.name} "
+                     f"— see homophone_fixes.json")
+        else:
+            # a corrector that cannot run is not a reason to lose the video,
+            # but the text stays uncorrected and the user must know that
+            log("A", f"WARN: fix_homophones exited {rc} for {run_dir.name} "
+                     f"— transcript left uncorrected")
 
     # --- stage B: vision -> fusion -> artifacts --------------------------------
     def stage_b(self, video: Path, run_dir: Path) -> None:
@@ -321,6 +360,17 @@ def main() -> int:
     ap.add_argument("--only", default="", help="regex — only process matching paths")
     ap.add_argument("--limit", type=int, default=0, help="stop after N NEW videos (0=all)")
     ap.add_argument("--no-notes", action="store_true")
+    ap.add_argument("--no-homophone-fix", action="store_true",
+                    help="skip the post-ASR homophone corrector "
+                         "(scripts/fix_homophones.py); subtitles.srt/.vtt are "
+                         "left as ASR wrote them")
+    ap.add_argument("--homophone-glossary", default="",
+                    help="extra terms for fix_homophones.py, comma separated "
+                         "or @file (built-in music terms are always included)")
+    ap.add_argument("--homophone-block", action="append", default=[],
+                    metavar="WORD",
+                    help="never correct this fragment (repeatable), e.g. "
+                         "--homophone-block 实度")
     ap.add_argument("--no-ocr-hotwords", action="store_true",
                     help="disable the OCR->hotwords feedback loop (no course "
                          "vocab accumulation, no coverage check)")
