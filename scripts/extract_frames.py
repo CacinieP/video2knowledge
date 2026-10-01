@@ -328,27 +328,44 @@ def _jpg_luma(jpg: Path) -> float:
 
 def _extract_jpg_settled(video: Path, t: float, jpg: Path, fps: float,
                          blank: tuple[float, float] = BLANK_RANGE) -> bool:
-    """Write one JPEG at `t`; if it decodes blank/black (the fps-filter's
-    renumbered timestamps can point the seek a fraction of a sample EARLIER
-    than the frame the hash actually saw mid-fade), retry slightly later.
+    """Write one JPEG at `t`; retry around `t` until we get a usable frame.
 
-    Returns True if the file exists. Bounded to 2 retries (<= 1 sample period).
+    Two distinct failure modes, both seen in the wild:
+
+    1. The frame decodes but is blank/black (the fps-filter's renumbered
+       timestamps can point the seek a fraction of a sample EARLIER than the
+       frame the hash actually saw mid-fade) -> retry slightly later.
+    2. ffmpeg FAILS outright. An fps-filter timestamp landing in the last ~1 s
+       of the stream breaks fast seek on H.264 ("co located POCs unavailable",
+       exit -22) because there is no following frame to anchor the decode. Tail
+       emission always picks such a timestamp, so this is the common case, not
+       the exotic one. It must retry BACKWARD, and it must not raise: with
+       check=True a single tail frame aborted the whole run, and since main()
+       rmtree's the out-dir first that lost EVERY frame of the video.
+
+    Returns True if a usable JPEG was written.
     """
-    for k, tt in enumerate((t, t + 0.5 / fps, t + 1.0 / fps)):
-        subprocess.run(
+    # forward first (mode 1), then backward (mode 2), then wider backward
+    cands = [t, t + 0.5 / fps, t + 1.0 / fps,
+             t - 0.5 / fps, t - 1.0 / fps, t - 2.0, t - 4.0]
+    for k, tt in enumerate(cands):
+        if tt < 0:
+            continue
+        r = subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
              "-ss", f"{tt:.3f}", "-i", str(video), "-frames:v", "1",
              "-q:v", "3", "-y", str(jpg)],
-            check=True,
+            capture_output=True, text=True,
         )
-        if not jpg.exists():
-            return False
-        if k == 2:  # last try: accept whatever we got (legitimately dark content)
+        if r.returncode != 0 or not jpg.exists() or jpg.stat().st_size == 0:
+            jpg.unlink(missing_ok=True)   # never leave a 0-byte frame behind
+            continue
+        if k == len(cands) - 1:  # last try: accept whatever we got
             return True
         m = _jpg_luma(jpg)
         if blank[0] <= m <= blank[1]:
             return True
-    return True
+    return False
 
 
 def extract_dedup(video: Path, out_dir: Path, fps: float, hamming: int,
@@ -530,6 +547,22 @@ def main() -> int:
         return 2
 
     if args.out_dir.exists():
+        # Only clear a directory that is actually a frames directory. Passing
+        # the RUN dir (e.g. --out-dir runs/lecture instead of runs/lecture/frames)
+        # is an easy slip, and an unconditional rmtree there silently destroys
+        # subtitles.json, knowledge.*, cards.* — hours of ASR and LLM work — and
+        # then crashes, leaving nothing at all. Refuse instead.
+        existing = list(args.out_dir.iterdir())
+        foreign = [p for p in existing
+                   if not (p.is_file() and (p.name == "frames.json"
+                                            or p.name.startswith(("frame_", "suspect_"))))]
+        if foreign:
+            names = ", ".join(sorted(p.name for p in foreign)[:6])
+            print(f"[err] refusing to clear {args.out_dir}: it holds non-frame "
+                  f"files ({names}{'...' if len(foreign) > 6 else ''}).\n"
+                  f"      Point --out-dir at a frames subdirectory, e.g. "
+                  f"{args.out_dir / 'frames'}.", file=sys.stderr)
+            return 2
         shutil.rmtree(args.out_dir)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
