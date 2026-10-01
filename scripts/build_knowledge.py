@@ -216,7 +216,16 @@ def ask_llm(host: str, model: str, prompt: str) -> str | None:
                        "options": {"temperature": 0.3, "num_ctx": 16384,
                                    "num_predict": cap}})
         return r.get("response", "").strip()
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError) as e:
+        # Say what went wrong. This returned None in silence, and the caller
+        # turns None into a placeholder-filled document — so a model that is
+        # simply not there (wrong name, ollama not running, OLLAMA_MODELS
+        # pointing at a directory that is not the one holding the weights, so
+        # /api/tags answers 200 with an empty list and /api/generate 404s)
+        # produced a complete run of "successful" knowledge docs containing
+        # nothing but fallback text, and exit code 0 throughout.
+        print(f"[llm] generate failed for '{model}': {type(e).__name__}: {e}",
+              file=sys.stderr)
         return None
 
 
@@ -725,6 +734,65 @@ def _heuristic_fallback(raw_text: str, fields: dict) -> dict:
     return fields
 
 
+# The one string that marks a document as fallback text rather than output.
+# Exported as a constant so a caller (batch driver, resume logic) can test for
+# degradation instead of pattern-matching Chinese prose.
+DEGRADED_MARKER = "本地模型不可用"
+
+
+def is_degraded(analysis: dict) -> bool:
+    """True when the document is mostly placeholder rather than generated.
+
+    A knowledge doc built with no reachable model still looks like a finished
+    deliverable: right filename, right sections, plausible length, exit code 0.
+    In a batch that is the worst possible failure mode — it reads as success.
+    Detecting it by content means a driver can refuse to treat the run as done.
+    """
+    if not isinstance(analysis, dict):
+        return True
+    summary = analysis.get("summary")
+    if not summary or not str(summary).strip():
+        return True          # no summary at all is the same failure, quieter
+    return DEGRADED_MARKER in str(summary)
+
+
+# Emitted by main() when the transcript has no speech at all. Not a degradation —
+# it is the honest answer — but a driver still has to be able to tell it apart
+# from a real document.
+NO_SPEECH_MARKER = "未识别到语音内容"
+
+# What a driver should do with a finished knowledge doc.
+STATUS_OK = "ok"                # real content
+STATUS_DEGRADED = "degraded"    # model unreachable / returned nothing usable
+STATUS_NO_SPEECH = "no-speech"  # transcript empty; placeholder is correct
+
+
+def knowledge_doc_status(analysis: dict, n_segments: int) -> str:
+    """Classify a finished knowledge doc so a batch driver can trust it.
+
+    `n_segments` is the subtitle segment count the document was built from, and
+    it is not optional decoration: it is the only thing that catches the worst
+    failure mode, which leaves no marker to grep for.
+
+    With an empty transcript there is no possible source for a real summary, and
+    a small model does not decline — it invents one. Observed on a piano-course
+    library: a lesson on improv accompaniment came back summarised as "how to
+    send HTTP requests with Python's requests library", another as "how to use
+    WeChat mini-programs", both with invented `- [00:03]` timestamps. The file
+    was well-formed, exit code 0, and `is_degraded()` could not see it, because
+    the summary string itself looked perfectly plausible.
+
+    A batch driver treats only `ok` as finished. The other two are legitimate
+    outcomes that must not be retried blindly or counted as deliverables.
+    """
+    if is_degraded(analysis):
+        return STATUS_DEGRADED
+    if n_segments == 0:
+        summary = str(analysis.get("summary", ""))
+        return STATUS_NO_SPEECH if NO_SPEECH_MARKER in summary else STATUS_DEGRADED
+    return STATUS_OK
+
+
 # --- rendering ---------------------------------------------------------------
 
 def render_template(template_path: Path, ctx: dict) -> str:
@@ -935,6 +1003,12 @@ def main() -> int:
                                   cache=llm_cache)
         llm_cache.flush()
 
+    degraded = is_degraded(analysis)
+    if degraded:
+        print(f"[v2k] WARNING: '{args.model}' produced no usable output for "
+              f"{args.subtitles.name} — every section is fallback text.",
+              file=sys.stderr)
+
     def as_md(v) -> str:
         """Coerce any analysis value into a markdown string for template/HTML."""
         if isinstance(v, list):
@@ -1012,6 +1086,20 @@ def main() -> int:
             w.writerows(rows)
         print(f"[ok] {len(rows)} cards -> {csv_path}")
 
+    if degraded:
+        # The artifacts are still written — they are useful for eyeballing the
+        # transcript — but this must not read as a completed run. A batch driver
+        # that checks only the exit code will otherwise record hundreds of
+        # placeholder documents as finished work.
+        print(f"[err] KNOWLEDGE DOC IS DEGRADED: the text model "
+              f"'{args.model}' produced nothing usable, so every section is "
+              f"fallback text.\n"
+              f"      The files in {args.out_dir} are NOT a finished deliverable.\n"
+              f"      Check: is ollama running, and is '{args.model}' installed "
+              f"(curl {args.host}/api/tags)? On a reachable-but-empty model "
+              f"registry this looks like success and is not.",
+              file=sys.stderr)
+        return 4
     return 0
 
 
