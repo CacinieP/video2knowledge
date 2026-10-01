@@ -4,6 +4,14 @@ Path 2 extracts the audio track and transcribes it with **faster-whisper** (the
 CTranslate2 backend of Whisper), producing word/segment-level timestamps. This is
 the recommended path whenever the video has a clear speech track.
 
+> **Mandarin homophone trouble? Use the FunASR backend instead.**
+> `scripts/asr_funasr.py` (Paraformer-large) is a drop-in replacement producing the
+> same `subtitles.{srt,vtt,json}`. On a 30-minute Mandarin piano lesson,
+> faster-whisper `small` *with 39 hotwords including both terms* got them wrong
+> ~44% of the time (背谱→被谱 8×, 视谱→适谱 10×); Paraformer with the same hotwords
+> scored 94%. It also ran 11–16× realtime on CPU, leaving the GPU free.
+> See [FunASR backend](#funasr-backend-alternative) below.
+
 ## When to choose Path 2
 
 - Lecture, talk, interview, podcast video, tutorial with narration.
@@ -112,3 +120,64 @@ For high-value content, run Path 2 for accurate text + Path 1 for visual context
 then let the LLM in Step 2 merge them. Point `build_knowledge.py` at the ASR
 subtitles (better text), and paste key multimodal captions into the prompt or a
 custom template's `{{summary}}` slot.
+
+## FunASR backend (alternative)
+
+`scripts/asr_funasr.py` transcribes with **Paraformer-large + FSMN-VAD + CT-punc**
+and writes the same three files, so every downstream script works unchanged.
+
+Install it in a **separate venv** — funasr pins an old `tokenizers` and brings its
+own torch, and does not co-install with the main environment:
+
+```bash
+python3 -m venv .venv-funasr
+./.venv-funasr/bin/pip install "tokenizers>=0.21" torch
+./.venv-funasr/bin/pip install --no-deps funasr
+```
+
+Single clip, and the same via `batch_run.py`:
+
+```bash
+./.venv-funasr/bin/python scripts/asr_funasr.py \
+  --video VIDEO --out-dir OUT --language zh --hotwords "背谱,视谱,音阶"
+
+python3 scripts/batch_run.py --root LIBRARY --asr-backend funasr \
+  --asr-python ./.venv-funasr/bin/python
+```
+
+`paraformer-zh` is Mandarin-only and CPU-only — it has no `--model` /
+`--device` / `--compute-type`, so `batch_run.py` omits them for this backend.
+
+### Transcribing a whole library in one model load
+
+Model load costs 25–60 s. A process per clip pays that once per clip, which on a
+297-clip library is ~2.1 h of pure loading against ~5.3 h of actual
+transcription. `--jobs` takes a JSON list and skips anything already done:
+
+```json
+[{"video": "/lib/a.mp4", "out_dir": "/out/a"},
+ {"video": "/lib/b.mp4", "out_dir": "/out/b", "redo": true}]
+```
+
+```bash
+./.venv-funasr/bin/python scripts/asr_funasr.py --jobs jobs.json --language zh
+```
+
+Each finished run dir gets an `asr_engine.txt` recording which engine and
+segmenter revision produced its transcript, so a later run can tell a
+faster-whisper transcript from a FunASR one and re-do only what must be redone.
+
+### Gotchas found by running it
+
+- **Short model aliases matter.** `iic/speech_paraformer-...` + vad + ct-punc
+  returns `{key, text}` with **no timestamps**; the whole transcript then
+  collapses onto zero-length segments. The alias form (`paraformer-zh`,
+  `fsmn-vad`, `ct-punc`) is the only combination that returns both timestamps
+  and punctuation.
+- **Punctuation is inserted after the fact.** ct-punc adds it to a string the
+  ASR timestamped beforehand, so `text` is longer than `timestamp`. Walking both
+  with one index silently drops the tail of every transcript.
+- **Keep timestamps in one unit.** A punctuation mark borrows the previous
+  character's end time; if that one value is pre-divided, every segment ending on
+  。 / ？ / ！ fails its `end > start` check and is dropped. Measured: 62% of a
+  30-minute lecture silently lost, with no error anywhere.
