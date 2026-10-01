@@ -260,6 +260,35 @@ def auto_node_budget(duration_s: float) -> int:
     return max(NODE_MIN, min(NODE_MAX, round(duration_s / NODE_SECONDS)))
 
 
+def collapse_trailing_visual_nodes(sections: list[dict]) -> list[dict]:
+    """Collapse a trailing run of narration-less nodes to just the last one.
+
+    A lecture's final board shot yields several perception-distinct frames
+    seconds apart — the board is still being written, or a hand crosses it —
+    all after the last spoken word. Each becomes a section with an empty
+    narration window, no note, and a near-identical 画面 description, so the
+    note ends with 2-4 nodes repeating the same final board (measured: 07:12,
+    07:13 and 07:14 all reading "伯努利方程求解，令z=y⁻¹…"). The last of the
+    run is the fully-settled board — keep that one alone.
+
+    No-op for wordless videos: there every node is intentionally visual-only
+    (see build_sections), and their descriptions are genuinely different
+    frames of the performance, not re-reads of one static board.
+    """
+    if not sections or not sections[0].get("speech", True):
+        return sections
+    i = len(sections)
+    while i > 0 and not sections[i - 1].get("excerpt") \
+            and not sections[i - 1].get("note"):
+        i -= 1
+    dropped = len(sections) - i - 1
+    if dropped <= 0:
+        return sections
+    print(f"[notes] collapsed {dropped} trailing visual-only node(s) into the "
+          f"final settled frame", file=sys.stderr)
+    return sections[:i] + [sections[-1]]
+
+
 def resolve_frame_file(frames_json: Path, file_ref: str) -> Path:
     """Locate a frame image from its recorded path.
 
@@ -342,6 +371,24 @@ def build_sections(host: str, model: str | None, vlm_model: str | None,
 
 
 # --- rendering ----------------------------------------------------------------
+
+# Unicode superscripts the VLM emits inside formulas (y⁻¹, Cx⁻⁶, yⁿ …).
+# Microsoft YaHei — the CJK font fpdf2 auto-detects and subsets — lacks ⁻ and
+# the non-BMP-safe superscript digits, and fpdf2 silently drops glyphs the
+# subset lacks, so an exponent disappears from the PDF while looking fine in
+# md/html/docx (those renderers fall back to a font that has them).
+_SUPERMAP = {"\u207B": "-", "\u2070": "0", "\u00B9": "1", "\u00B2": "2",
+             "\u00B3": "3", "\u2074": "4", "\u2075": "5", "\u2076": "6",
+             "\u2077": "7", "\u2078": "8", "\u2079": "9", "\u207F": "n"}
+_SUPER_RE = re.compile("[" + "".join(re.escape(c) for c in _SUPERMAP) + "]+")
+
+
+def pdf_safe_text(text: str) -> str:
+    """Map unicode superscript runs to caret form for the PDF export only."""
+    def repl(m: re.Match) -> str:
+        body = "".join(_SUPERMAP[ch] for ch in m.group(0))
+        return f"^{body}" if len(body) == 1 and body != "-" else f"^({body})"
+    return _SUPER_RE.sub(repl, text)
 
 def render_markdown(sections: list[dict], meta: dict, out_dir: Path,
                      verbatim: bool = True) -> str:
@@ -580,6 +627,7 @@ def main() -> int:
           f"text={model or 'off'} vlm={vlm_model or 'off'}", file=sys.stderr)
     sections = build_sections(args.host, model, vlm_model, frames, segs,
                               describe=vlm_model is not None, lang=args.lang)
+    sections = collapse_trailing_visual_nodes(sections)
 
     duration = segs[-1]["end"] if segs else 0.0
     meta = {"title": args.title
@@ -613,10 +661,13 @@ def main() -> int:
                                base_dir=args.out_dir)
                 print(f"[ok] distilled note (docx) -> {p}")
             if args.pdf:
-                p = md_to_pdf(md, args.out_dir / "notes.pdf",
+                # fpdf2's CJK font subset drops the superscript glyphs the VLM
+                # loves (⁻ⁿ⁶ …): map them to caret form for PDF only — md/html/
+                # docx renderers fall back to a font that has them
+                p = md_to_pdf(pdf_safe_text(md), args.out_dir / "notes.pdf",
                               base_dir=args.out_dir, title=str(meta["title"]))
                 print(f"[ok] illustrated note (pdf) -> {p}")
-                p = md_to_pdf(md_light, args.out_dir / "notes-distilled.pdf",
+                p = md_to_pdf(pdf_safe_text(md_light), args.out_dir / "notes-distilled.pdf",
                               base_dir=args.out_dir, title=str(meta["title"]))
                 print(f"[ok] distilled note (pdf) -> {p}")
         except RuntimeError as e:

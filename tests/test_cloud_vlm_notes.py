@@ -125,3 +125,31 @@ def test_supports_vision_cloud_false_on_any_failure(monkeypatch):
 
     monkeypatch.setattr(bn, "_cloud_chat", boom)
     assert bn.supports_vision_cloud("m") is False
+
+
+def test_collapse_trailing_visual_nodes():
+    secs = [{"t": 1, "desc": "a", "excerpt": "x", "note": "n", "speech": True},
+            {"t": 2, "desc": "b", "excerpt": "", "note": "", "speech": True},
+            {"t": 3, "desc": "b", "excerpt": "", "note": "", "speech": True},
+            {"t": 4, "desc": "b", "excerpt": "", "note": "", "speech": True}]
+    out = bn.collapse_trailing_visual_nodes(secs)
+    assert [s["t"] for s in out] == [1, 4]  # keeps the final settled frame
+
+
+def test_collapse_keeps_all_when_no_trailing_run():
+    secs = [{"t": i, "desc": "d", "excerpt": "e", "note": "n", "speech": True}
+            for i in range(3)]
+    assert bn.collapse_trailing_visual_nodes(secs) == secs
+
+
+def test_collapse_noop_for_wordless_video():
+    # every node visual-only by design — collapsing would destroy the note
+    secs = [{"t": i, "desc": f"d{i}", "excerpt": "", "note": "", "speech": False}
+            for i in range(5)]
+    assert bn.collapse_trailing_visual_nodes(secs) == secs
+
+
+def test_pdf_safe_text_maps_missing_superscripts():
+    assert bn.pdf_safe_text("1/y=x²/8+Cx⁻⁶") == "1/y=x^2/8+Cx^(-6)"
+    assert bn.pdf_safe_text("yⁿ 次方") == "y^n 次方"
+    assert bn.pdf_safe_text("普通中文没有上标") == "普通中文没有上标"
