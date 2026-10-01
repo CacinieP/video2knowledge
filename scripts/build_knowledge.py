@@ -190,6 +190,8 @@ def http_json(url: str, payload: dict, timeout: int = 1800,
 
 
 def ping(host: str) -> bool:
+    if _CLOUD["api_base"]:
+        return True
     try:
         # GET /api/tags (POST not allowed -> 405)
         with urllib.request.urlopen(f"{host}/api/tags", timeout=10) as r:
@@ -200,6 +202,8 @@ def ping(host: str) -> bool:
 
 
 def ask_llm(host: str, model: str, prompt: str) -> str | None:
+    if _CLOUD["api_base"]:
+        return ask_llm_cloud(prompt)
     # num_predict is a HARD cap, not a tuning knob. Without it ollama generates
     # until EOS or until num_ctx is full (16k here), and a small reasoning model
     # (minicpm5-2b, qwen3.5:0.8b) on a large or degenerate prompt — a 90k-char
@@ -227,6 +231,86 @@ def ask_llm(host: str, model: str, prompt: str) -> str | None:
         print(f"[llm] generate failed for '{model}': {type(e).__name__}: {e}",
               file=sys.stderr)
         return None
+
+
+# --- OpenAI-compatible cloud LLM (optional) ----------------------------------
+#
+# Everything above talks to a local Ollama at `host`. This routes the same
+# ask_llm() to any /chat/completions provider instead, chosen by
+# `--api-base` or $V2K_LLM_API_BASE. The signature is unchanged, so every
+# caller keeps working and the local path is untouched when this is unset.
+_CLOUD = {"api_base": None, "api_model": None, "api_key": None}
+
+
+def configure_cloud(api_base: str, api_model: str, api_key_env: str) -> None:
+    """Point ask_llm() at an OpenAI-compatible endpoint instead of Ollama.
+
+    Works with any OpenAI-shaped /chat/completions provider (Qwen/DashScope,
+    GLM, DeepSeek, a self-hosted gateway). Reasoning models wrap their answer
+    in <think>…</think>, which is stripped — left in, it lands in the
+    knowledge doc as a wall of internal monologue.
+
+    The key is read from the environment only, never from argv: a key passed
+    on the command line ends up in the process list, in shell history, and in
+    every log line that echoes the command.
+    """
+    if not api_base:
+        return
+    key_env = api_key_env or "OPENAI_API_KEY"
+    key = os.environ.get(key_env, "")
+    if not key:
+        raise SystemExit(
+            f"[err] --api-base needs env var '{key_env}' set with your API key.\n"
+            f"       export {key_env}=... before running.")
+    _CLOUD.update(api_base=api_base.rstrip("/"), api_model=api_model, api_key=key)
+    print(f"[v2k] cloud LLM: model={api_model} base={api_base}", file=sys.stderr)
+
+
+def _strip_think(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def ask_llm_cloud(prompt: str) -> str | None:
+    base, model, key = _CLOUD["api_base"], _CLOUD["api_model"], _CLOUD["api_key"]
+    if not (base and model and key):
+        return None
+    payload = {"model": model, "stream": False, "temperature": 0.3,
+               "max_tokens": int(os.environ.get("V2K_NUM_PREDICT", "2048")),
+               "messages": [{"role": "user", "content": prompt}]}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"{base}/chat/completions", data=data,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {key}"})
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=1800) as r:
+                resp = json.loads(r.read().decode())
+            msg = resp.get("choices", [{}])[0].get("message", {})
+            text = _strip_think(msg.get("content") or "")
+            if not text:
+                # A 200 with no usable content is a failure, not an empty
+                # answer: returning "" would let the caller write a
+                # placeholder-filled document and call it done. This happens
+                # when a gateway answers a different schema than expected.
+                raise ValueError("no content in choices[0].message")
+            return text
+        except (urllib.error.HTTPError, urllib.error.URLError,
+                OSError, ValueError, KeyError, IndexError) as e:
+            # 429 and 5xx are worth one retry; a 401 or 400 will fail again
+            # identically, so retrying it just doubles the wait.
+            code = getattr(e, "code", 0) if isinstance(e, urllib.error.HTTPError) else 0
+            if attempt == 0 and (code in (408, 429) or code >= 500):
+                wait = 5 * (attempt + 1)
+                print(f"[llm] cloud {code}, retrying in {wait}s", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            # Never silent: a None here becomes a placeholder-filled document
+            # that looks like a finished deliverable.
+            print(f"[llm] cloud generate failed: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+            return None
+    return None
 
 
 def _extract_json(text: str) -> dict | None:
@@ -978,7 +1062,23 @@ def main() -> int:
                     help="max chars of raw text fed to the model (default 8000; auto-raised "
                          "in merged mode since interleaved audio+visual is the main signal)")
     ap.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
+    ap.add_argument("--api-base", default=os.environ.get("V2K_LLM_API_BASE", ""),
+                    help="use an OpenAI-compatible /chat/completions endpoint "
+                         "instead of local Ollama (default: unset = local). "
+                         "Vendor-neutral: any compatible URL works.")
+    ap.add_argument("--api-model", default=os.environ.get("V2K_LLM_API_MODEL", ""),
+                    help="model name for --api-base (required with it)")
+    ap.add_argument("--api-key-env", default=os.environ.get("V2K_LLM_API_KEY_ENV",
+                                                            "OPENAI_API_KEY"),
+                    help="env var holding the API key (default OPENAI_API_KEY). "
+                         "The key is never read from argv.")
     args = ap.parse_args()
+
+    if args.api_base and not args.api_model:
+        print("[err] --api-base also needs --api-model (or $V2K_LLM_API_MODEL)",
+              file=sys.stderr)
+        return 2
+    configure_cloud(args.api_base, args.api_model, args.api_key_env)
 
     if not args.subtitles.is_file():
         print(f"[err] subtitles not found: {args.subtitles}", file=sys.stderr)
