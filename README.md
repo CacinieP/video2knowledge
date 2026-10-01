@@ -19,8 +19,9 @@
 | 📝 **带时间戳字幕** | `subtitles.srt` / `.vtt` / `.json` | 词级时间戳，可直接喂播放器或下游处理 |
 | 📄 **知识文档** | `knowledge.md` | 摘要 / 时间轴 / 核心知识点 / Q&A / 术语表 / **画面要点**，**支持自定义模板** |
 | 🖼️ **图文笔记** | `notes.md` + `notes.html` | 关键帧插图 × 对应旁白要点交错排版；HTML 版自包含单文件可直接分享 |
+| 🍵 **纯享版笔记** | `notes-distilled.md` | 同样的节点和插图，砍掉原声引用——背起来/复习用，体积少 42%，**零额外模型开销** |
 | 🌐 **HTML** | `knowledge.html` | 自包含单文件，`[mm:ss]` 时间戳可点跳 |
-| 🃏 **知识卡片 CSV** | `cards.csv` | question / answer / tags / timestamp / source |
+| 🃏 **知识卡片 CSV** | `cards.csv` | question / answer / tags / timestamp / source，**自动去重** |
 | 📚 **Anki 牌组** | `cards.apkg` | 稳定 ID，重复导入不重复，开箱即用 |
 
 <a id="paths"></a>
@@ -28,7 +29,7 @@
 **三条路径**任选或并用：
 
 - **路径 1 · 多模态**：原生多模态小模型（≤4B VLM，经 Ollama）逐帧读视频 → 带时间戳字幕。适合**无音轨 / 纯画面 / 屏幕录制 / 演示文稿**，能抓 ASR 看不见的屏幕文字和图表。
-- **路径 2 · ASR**：faster-whisper 转写音轨 → 带时间戳字幕。适合**有清晰语音的视频**（讲座/访谈/教程），更快更准。
+- **路径 2 · ASR**：把音轨转写成带时间戳字幕。适合**有清晰语音的视频**（讲座/访谈/教程），更快更准。中文推荐 **FunASR Paraformer**：同一条 30 分钟课、同样的 39 条热词，领域同音词正确率从 faster-whisper 的 **44% → 94%**，而且跑 CPU，12–16× 实时；`python3 scripts/hardware_profile.py --recommend` 会按你的机器给出建议（**按内存判断，不是按显存**——有显卡反而要留给 VLM，ASR 和 VLM 抢显存会把 8-token 的请求从 3.8 秒拖到 60 秒以上）。转写完再跑一遍 `fix_homophones.py` 修领域同音错字。
 - **路径 3 · 音画融合**：ASR 抓讲解 + VLM OCR 抓屏幕（表格/公式/举例），按时间戳融合，外加**跨路径反馈**——OCR 术语回灌 ASR 热词、语义对齐校正讲解/幻灯片错位。适合**有语音讲解的 PPT/幻灯片视频**——把 ASR 听不到的画面内容补回来。
 
 路径 1、2 产出的字幕 schema 一致，第二步（知识加工）对路径无感；路径 3 产出融合的 `merged.json`，由第二步的 `--merged` 消费。
@@ -159,12 +160,28 @@ source .venv/bin/activate            # 或 .venv/Scripts/activate
 
 ### A. 路径 2 · ASR（有语音的视频，推荐先试）
 
+先问机器要建议（中文会推荐 FunASR Paraformer）：
+
+```bash
+python3 scripts/hardware_profile.py --recommend
+```
+
 ```bash
 source .venv/bin/activate   # 激活 venv（用了方式 B 则换成 setup_models.sh 打印的那行）
 
 # 第一步：视频 → 字幕
 python3 scripts/asr_caption.py \
   --video your_video.mp4 --out-dir runs/demo --language zh
+
+#   中文更准的选择：FunASR Paraformer（领域同音词 44% → 94%，跑 CPU，12-16× 实时）
+#   需要独立 venv —— funasr 的 tokenizers 依赖装不进主环境
+python3 .venv-funasr/bin/python scripts/asr_funasr.py \
+  --video your_video.mp4 --out-dir runs/demo --language zh \
+  --hotwords "背谱,视谱,音阶,琶音"
+
+# 第一步半：修领域同音错字（ASR 听的是声音不是词，错字会一路传到所有下游产物）
+python3 scripts/fix_homophones.py --subtitles runs/demo/subtitles.json --dry-run  # 先看看会改什么
+python3 scripts/fix_homophones.py --subtitles runs/demo/subtitles.json            # 确认后真改
 
 # 第二步：字幕 → 知识文档 / HTML / 卡片 CSV
 # （首次运行会自动拉取文本模型：mid 及以下档为 openbmb/minicpm5-2b，约 1.6 GB，稍等）
@@ -176,9 +193,11 @@ python3 scripts/gen_apkg.py \
   --csv runs/demo/cards.csv --out runs/demo/cards.apkg --deck "我的知识卡"
 ```
 
-完成后 `runs/demo/` 里就有 `subtitles.srt`、`knowledge.md`、`knowledge.html`、`cards.csv`、`cards.apkg`，装了 python-docx/fpdf2 时 `--format all` 还会自动产出 `knowledge.docx` 和 `knowledge.pdf`。
+完成后 `runs/demo/` 里就有 `subtitles.srt`、`knowledge.md`、`knowledge.html`、`cards.csv`、`cards.apkg`，装了 python-docx/fpdf2 时 `--format all` 还会自动产出 `knowledge.docx` 和 `knowledge.pdf`。同声修复会一并重写 `subtitles.srt` / `.vtt`，并把改动日志写进 `homophone_fixes.json`。
 
 > 英文视频记得在第二步加 `--lang en`（默认 `zh`），否则小模型在语言不匹配时容易把示例内容串进产出。
+>
+> **没有语音的视频**（纯音乐、纯幻灯片）ASR 会返回 0 段。旧版照样生成"知识文档"，内容全是模型编的；现在 `knowledge_doc_status()` 会返回 `no-speech` 并拒绝伪造。
 
 ### B. 路径 1 · 多模态（无音轨 / 屏幕录制 / 演示文稿）
 
@@ -237,10 +256,28 @@ python3 scripts/extract_frames.py --video demo.mp4 --out-dir runs/demo/frames --
 python3 scripts/build_notes.py \
   --subtitles runs/demo/subtitles.json \
   --frames runs/demo/frames/frames.json \
-  --out-dir runs/demo --describe-frames   # 节点数自动(每~4分钟1个,8-36); 也可 --max-frames N 固定
+  --out-dir runs/demo --describe-frames \
+  --model openbmb/minicpm5-2b --vlm-model openbmb/minicpm-v4.6:latest
+  # 节点数自动：每 ~45 秒 1 个，钳制 12-60（12 分钟课 16 个节点，41 分钟课 55 个）
+  # 也可 --max-frames N 固定
 ```
 
-每个节点：LLM 小标题 → 帧插图 → VLM 画面描述（`--describe-frames`）→ 旁白浓缩要点 → 原声节选。产出 `notes.md`（相对路径插图）和 `notes.html`（base64 自包含单文件，可直接发给别人）。加 `--docx --pdf` 可再导出 `notes.docx` / `notes.pdf`（关键帧嵌入，打印/归档友好；PDF 自动探测系统中文字体，可用 `V2K_PDF_FONT` 指定）。
+每个节点：LLM 小标题 → 帧插图 → VLM 画面描述（`--describe-frames`）→ 旁白浓缩要点 → 原声节选。
+
+**画面描述只写教学信息，不写人。** VLM 提示词明确要求描述乐谱/板书/屏幕文字上的具体内容（音名、和弦、拍号、标注），并**禁止**描述"女士弹琴""手势讲解"这类人物动作；没有可读教学内容时改为点明画面主题。实测同一帧：`女士弹琴，手势讲解` → `乐谱显示音名与和弦`——前者对复习毫无帮助。
+
+> ⚠️ `--describe-frames` 一定要显式给 `--vlm-model` 一个带视觉能力的模型。不给的话它会回落到**文本模型**，看不见画面；现在会打印警告并跳过画面描述，而不是每个关键帧失败一次。
+
+**一份产出两个视图。** 同样的节点、插图、要点，砍不砍原声引用由你选：
+
+| 文件 | 内容 | 适合 |
+|---|---|---|
+| `notes.md` | 帧 + 要点 + **原声引用** | 核对老师原话 |
+| `notes-distilled.md` | 同样的节点和插图，**无原声引用** | 背 / 复习（实测 295 个节点里引用占 53% 字符，砍掉体积少 42%） |
+
+纯享版是从已经算好的结果里再渲染一遍，**不额外调用模型**。`--docx --pdf` 会同时导出两份。`notes.html` 是自包含 base64 单文件（完整版）。
+
+产出：`notes.md`、`notes-distilled.md`、`notes.html`；加 `--docx --pdf` 再出 `notes.docx` / `notes-distilled.docx` / `notes.pdf` / `notes-distilled.pdf`（关键帧嵌入，打印/归档友好；PDF 自动探测系统中文字体，可用 `V2K_PDF_FONT` 指定）。
 
 ---
 
@@ -249,8 +286,24 @@ python3 scripts/build_notes.py \
 - **切帧管道流式严格解析**：PGM 帧流按 header 声明的像素数精确读取，绝不扫描像素数据寻找魔数——旧实现在像素字节碰巧含 `P5
 ` 序列时会**静默截断该视频后续全部关键帧**（长批量下必然偶发，表现为"缺内容"）。回归测试 `tests/test_pgm_stream.py` 用内嵌魔数的真实视频守住此缺陷。
 - **尾帧补发（微改动不丢）**：感知哈希阈值只能抓到"足够大"的画面变化——老师在翻页前改一个数字、加一行要点这类**低于阈值的累积微改**会被静默丢弃。检测到翻页时，回看上一相似段的最后一帧：只要它与旧锚点确有差异、自身稳定、且不是新页的近邻，就补发这个"最终状态帧"。三重门限保证手写漂移过程不会帧爆炸（实测：37 分钟课程 28 个尾帧全部命中真翻页前状态，117 个噪声过渡零误发）。回归测试 `tests/test_frames.py`。
+### 静默吃内容的 bug（全部已修 + 回归测试）
+
+这一类最危险：文件照样生成、退出码是 0、看不出任何异常，但内容少了一大块。下面每一条都是在 306 个视频 / 61.5 小时的真实批量里才暴露出来的：
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| **标点结尾的字幕段全被丢弃**（一段课程 165 段 → 316 段） | `align_text_ts` 存标点的零宽时间戳时用了**秒**，下游当**毫秒**再除 1000，段首末全部塌到 0 之外 | 单位统一到毫秒 |
+| **长课程知识文档在 8000 字被截断**（找回 35% 内容） | `char_limit` 默认 8000 先切片，`long_mode = len(sub) > 13500` 永远不成立——**分块器是死代码** | 自动放开阈值 + map-reduce 分块真正生效 |
+| **LLM 不可用被当成成功** | `OLLAMA_MODELS` 指向空目录时 `/api/tags` 返回 200 + 空列表，`/api/generate` 404，脚本 exit 0 | 打印原因 + `is_degraded()` 标记 + **exit 4** |
+| **0 段字幕时模型凭空编内容** | 无语音视频照样生成"知识文档"，把「有旋律即兴伴奏」写成「如何使用 Python requests 库发 HTTP 请求」，还伪造 `-[00:03]` 时间戳 | `knowledge_doc_status()` 返回 `ok` / `degraded` / `no-speech`，`no-speech` 不再伪造 |
+| **Anki 卡片大面积重复**（1608 张里 145 张重复，最差 117 行 → 11） | `cards_from_qa` 是纯解析器，零去重；而模型很少一字不差重复（"白键之间是全音" vs "白键和相邻白键间隔是一个全音"） | 按**归一化问句**（剥标点/空白/大小写）去重 |
+| **图文笔记节点稀疏**（37 分钟课只有 9 个节点） | 节点预算下限卡死：`1-per-90s` 仍钳制在 8-48，而这个库平均片长 12.1 分钟，**下限把大多数视频都按在 8 个节点** | 改成 `1-per-45s`、钳制 12-60。**要动的是下限，不是上限** |
+| **`build_notes.py` 把文本模型当 VLM** | `--describe-frames` 不给 `--vlm-model` 就回落成文本模型，每个关键帧失败一次 | `supports_vision()` 前置校验 + 警告并跳过 |
+
+**配套的 ASR 准确度提升**：中文领域同音词用 FunASR Paraformer（44% → 94%），剩下的用 `fix_homophones.py` 兜底——按**带声调拼音**匹配而不是编辑距离，因为 背谱/被谱 连拼音带声调都相同，音频本身就有歧义；而 音阶(yīn jiē) ≠ 音介(yīn jiè)，声调不同就说明音频没歧义。三重护栏保证宁可漏检不可错纠：功能字首尾护栏 + `DEFAULT_BLOCKED = {"实度", "何首"}` + 按偏移量精确替换。实测 20 节课 20 类真错误 46 处，精度 100%。
+
 - **Ollama 死锁规避**：单模型统一配置（视觉+文本同模型）+ 常驻加载，消除多模型切换路径上的服务端死锁。
-- 测试：`python tests/test_frames.py && python tests/test_fusion.py && python tests/test_pgm_stream.py`（41 项，无需网络/模型）。
+- 测试：`python -m pytest` — **248 项**，无需网络/模型。
 
 ---
 
@@ -367,10 +420,38 @@ venv 固定建在仓库根 `.venv/`。最稳妥的方式是用 `setup_models.sh`
 <summary><b>Q: 跑 <code>build_knowledge.py</code> 卡很久 / 报模型找不到？</b></summary>
 
 第二步会调用**文本模型**（用于摘要/知识点/Q&A），默认由 `hardware_profile.py` 按档位给出：`mid` 及以下为 `openbmb/minicpm5-2b`（约 1.6 GB），`high` 及以上复用 VLM 权重。首次运行时 Ollama 会自动拉取，需要联网和等待；提前手动拉可避免等待意外：`ollama pull openbmb/minicpm5-2b`。想再提质：`--model qwen3.5:9b`。
+
+> ⚠️ 如果 `OLLAMA_MODELS` 环境变量指向了一个空目录，`/api/tags` 会返回 200 + 空列表、`/api/generate` 返回 404——**旧版脚本会照样 exit 0**，你会拿到一份降级产出还以为跑成功了。现在会打印具体原因、给文档打 `degraded` 标记、并以 **exit 4** 退出。
 </details>
 
 <details>
-<summary><b>Q: 报错 <code>ollama not found</code> / <code>ffmpeg not found</code>？</b></summary>
+<summary><b>Q: 中文视频 ASR 老是"背谱"听成"被谱"、"琶音"听成"爬音"？</b></summary>
+
+三件事按性价比排序：
+
+1. **换 Paraformer**（收益最大）：`python3 scripts/hardware_profile.py --recommend` 看看是不是推荐 FunASR。同一条 30 分钟课实测 44% → 94%。
+2. **修错字**：`fix_homophones.py` 按带声调拼音匹配领域词表，把剩下的错字改回来，并同步重写 `.srt`/`.vtt`。先 `--dry-run` 看提案。
+3. **热词**：`--hotwords "背谱,视谱,音阶"` 通过 initial_prompt 偏置。
+
+但要知道 2 也有天花板：**背谱/被谱 连拼音带声调都一模一样，音频本身是有歧义的**。所以判断能不能修的标准不是"像不像"，而是"声调一不一样"——音阶(yīn jiē) 和 音介(yīn jiè) 声调不同，说明音频没歧义，放心改。误报几乎都是常用词被切半（曲**是**、声**不**），所以默认带护栏，宁可漏检不可错纠。
+</details>
+
+<details>
+<summary><b>Q: 图文笔记一个视频只有几个节点 / 画面描述在描述人物？</b></summary>
+
+节点数现在是自动的：每 ~45 秒 1 个，钳制 12–60。想更密或更疏就显式传 `--max-frames N`。
+
+画面描述写人（"女士弹琴，手势讲解"）是提示词的问题，现在的提示词明确要求只写乐谱/板书/屏幕文字上的教学信息，并禁止描述人物动作。如果画面描述**整段消失**，多半是 `--describe-frames` 没配 `--vlm-model`，回落到了看不见图的文本模型——现在会打印警告并跳过。
+</details>
+
+<details>
+<summary><b>Q: Anki 牌组里一堆几乎一样的卡片？</b></summary>
+
+现在 `cards.csv` 会按**归一化问句**去重（剥标点/空白/大小写），因为模型很少一字不差重复——"两个白键之间是全音" 和 "白键和相邻白键间隔是一个全音" 是同一张卡。旧牌组不会自动修，需要离线跑一次去重重建。
+</details>
+
+<details>
+<summary><b>Q: 跑 <code>ollama not found</code> / <code>ffmpeg not found</code>？</b></summary>
 
 回【第 1 步】把对应工具装上并确认在 PATH 里：`ollama --version && ffmpeg -version`。Ollama 装好后若未常驻，`setup_models.sh` 会自动 `ollama serve` 拉起；若仍失败，手动开一个终端跑 `ollama serve`。
 </details>
@@ -391,7 +472,8 @@ venv 固定建在仓库根 `.venv/`。最稳妥的方式是用 `setup_models.sh`
 
 ## 🔒 隐私与留痕
 
-- **全程本地**：视频文件、抽帧、字幕、知识产物始终留在你机器上的 `runs/<时间戳>-<视频名>/`，绝不上传，不联网调用云 API。
+- **默认全程本地**：视频文件、抽帧、字幕、知识产物始终留在你机器上的 `runs/<时间戳>-<视频名>/`，**默认路径不联网、不调用任何云 API**。FunASR Paraformer、faster-whisper、Ollama 全部跑在本机。
+- **云端后端是显式 opt-in，且会把音频/文本发出去**：如果你显式传了 `--backend openai-api` / `mimo-asr`（ASR），或 `--api-base`（知识文档，兼容 OpenAI 的 `/chat/completions`），**对应的音频或字幕文本会上传到那个第三方端点**。这不是默认行为，也不会自动发生——不传这些参数就完全本地。密钥从环境变量读（`--api-key-env`），不会出现在命令行历史里。
 - **仓库只跟代码**：本仓库是 skill 本身（脚本/文档/模板）的版本管理，**不包含任何视频或处理产出**——`runs/` 已在 `.gitignore` 中忽略。代码与配置的修改都有 git 历史可追溯。
 - **本地复现**：要复现某次结果，在本地 `runs/<...>/` 里查看当次用的参数和产出即可（按需自行写 `manifest.json` 记录，但默认不入库）。
 
