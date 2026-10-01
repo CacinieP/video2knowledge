@@ -121,6 +121,91 @@ then let the LLM in Step 2 merge them. Point `build_knowledge.py` at the ASR
 subtitles (better text), and paste key multimodal captions into the prompt or a
 custom template's `{{summary}}` slot.
 
+## Which backend should I use?
+
+Ask the machine:
+
+```bash
+python3 scripts/hardware_profile.py --recommend
+```
+
+It prints a backend and a reason, plus a ready-to-paste command. The
+recommendation is advice only — nothing changes unless you pass it back.
+
+On a 61.5-hour Mandarin course (286 videos), both engines were run over the
+same 30-minute lecture with the same 39-term hotword list:
+
+| | homophone terms correct | speed |
+|---|---|---|
+| faster-whisper `small` + hotwords | 44% (8 of 18) | 2.5× realtime |
+| Paraformer-zh (FunASR, CPU) | **94%** (17 of 18) | 12–16× realtime |
+
+Paraformer fixes things hotwords cannot: 背谱/被谱, 视谱/适谱, 穿指/川指 are
+identical in pinyin *and* tone, so no acoustic model separates them — the
+course vocabulary just has to be spelled correctly downstream
+(`scripts/fix_homophones.py` does that).
+
+The recommendation keys on **RAM, not VRAM**. Paraformer's advantage is
+Mandarin accuracy and it runs on CPU, so a machine with a large GPU and a
+large GPU with a modest machine reach the same answer. VRAM matters for a
+different reason: leave it free for the VLM, because running whisper and the
+VLM at once turns an 8-token request from 3.8 s into over 60 s.
+
+Cloud backends are only suggested when the host genuinely cannot keep up
+(< 6 GB RAM). Sending a course recording to a third party is a real privacy
+decision, so it is the fallback and not the default.
+
+## Cloud ASR backends
+
+`scripts/asr_caption.py --backend` also accepts two cloud engines. They write
+the same `subtitles.json` schema, so nothing downstream changes.
+
+```bash
+# any OpenAI-compatible /audio/transcriptions endpoint
+export MY_ASR_KEY=...                      # never pass the key on argv
+python3 scripts/asr_caption.py --video IN.mp4 --out-dir OUT \
+  --backend openai-api \
+  --api-base https://dashscope.aliyuncs.com/compatible-mode/v1 \
+  --api-model qwen3-asr-flash \
+  --api-key-env MY_ASR_KEY
+```
+
+`--api-base` is **not** a whitelist — any OpenAI-shaped URL works, including a
+self-hosted whisper.cpp server or your own gateway.
+
+`mimo-asr` is for gateways that expose a *chat* endpoint instead of the
+transcription one. Those return no timestamps, so the clip is cut on
+silence-aligned boundaries (`ffmpeg silencedetect`) and each chunk's
+`[start, end]` becomes its segments' timestamps:
+
+```bash
+python3 scripts/asr_caption.py --video IN.mp4 --out-dir OUT \
+  --backend mimo-asr --api-base URL --api-model mimo-v2.5-asr \
+  --api-key-env MY_KEY --chunk-seconds 600 --concurrency 4
+```
+
+**The key is read from an environment variable only.** A key passed on the
+command line lands in the process list, in shell history, and in every log
+line that echoes the command.
+
+## Cloud LLM
+
+The same treatment applies to the text model. `build_knowledge.py` can route
+`ask_llm()` to any OpenAI-compatible `/chat/completions` endpoint instead of
+local Ollama:
+
+```bash
+export V2K_LLM_API_KEY=...     # or whatever --api-key-env names
+python3 scripts/build_knowledge.py --subtitles OUT/subtitles.json \
+  --out-dir OUT --api-base https://api.example.com/v1 --api-model some-model
+```
+
+Useful when the local machine is busy with ASR, or when a 2B local model is
+not producing summaries you would trust. Reasoning models' `<think>` blocks
+are stripped — left in, they land in the knowledge doc as a wall of internal
+monologue. Cloud failures are reported on stderr and exit non-zero, never
+turned into a placeholder-filled document that looks finished.
+
 ## FunASR backend (alternative)
 
 `scripts/asr_funasr.py` transcribes with **Paraformer-large + FSMN-VAD + CT-punc**

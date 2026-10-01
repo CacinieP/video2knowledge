@@ -321,6 +321,62 @@ def select_asr_device(nvidia_vram: float | None, cuda_ok: bool) -> str:
     return "cpu"
 
 
+def recommend_asr_backend(d: dict) -> tuple[str, str]:
+    """Return (backend, reason) for this host — which ASR should you actually use.
+
+    This is advice, not configuration: nothing here changes what the scripts do
+    unless you pass the answer back as `--asr-backend`. It exists because the
+    three backends are good at very different things and the right one is not
+    obvious from RAM alone.
+
+    Measured on a 286-video Mandarin course (61.5 h) on an RTX 3060 Laptop,
+    6 GB VRAM, both engines on the same 30-minute lecture:
+
+        faster-whisper (small + 39 hotwords)   44% correct on homophone terms
+        Paraformer-zh (FunASR, CPU)            94%, and 12-16x realtime
+
+    Paraformer wins on Mandarin accuracy and it wins on CPU, so the VRAM
+    question barely matters for it. An earlier version of this function
+    recommended funasr *because* it saw >= 8 GB VRAM and described it as
+    "GPU-accelerated"; that was wrong twice over — Paraformer runs on CPU
+    here, and 8 GB is the profile-tier gate, not the ASR gate (see
+    `select_asr_device`, which is the honest one).
+
+    Cloud is recommended only when the host genuinely cannot keep up, because
+    sending a course recording to a third party is a real privacy decision and
+    should be the fallback, not the default.
+    """
+    ram = float(d.get("ram_gb") or 0)
+    nv = d.get("nvidia_vram_gb")
+    apple = d.get("apple_chip")
+    cuda_ok = bool(d.get("cuda_ok"))
+
+    # Nothing local will be tolerable below this.
+    if ram < 6:
+        return ("openai-api",
+                f"only {ram} GB RAM — local ASR is too slow to be usable. "
+                f"A cloud OpenAI-compatible endpoint is the practical option; "
+                f"note that it uploads the audio to a third party.")
+
+    if ram >= 8:
+        why = (f"Paraformer-zh (FunASR) transcribes Mandarin homophones far more "
+               f"accurately than faster-whisper — measured 94% vs 44% on a "
+               f"piano course. It runs on CPU, so {ram} GB RAM is enough")
+        if apple:
+            why += f", and Apple Silicon ({apple}) makes CPU ASR fast"
+        elif nv and cuda_ok:
+            why += (f". Your {nv} GB GPU stays free for the VLM — do not run "
+                    f"whisper and the VLM at the same time or they fight over "
+                    f"VRAM")
+        return ("funasr", why + ".")
+
+    return ("faster-whisper",
+            f"{ram} GB RAM with no usable GPU — faster-whisper 'small' is the "
+            f"local default and fits comfortably. If Mandarin accuracy matters "
+            f"more than speed, FunASR on CPU still beats it and is the better "
+            f"trade here.")
+
+
 def detect() -> dict:
     """Run all detection and return a full profile dict."""
     ram = detect_ram_gb()
@@ -341,7 +397,7 @@ def detect() -> dict:
     # and it costs no extra VRAM over int8.
     elif compute == "int8" and device == "cuda":
         compute = "int8_float16"
-    return {
+    d = {
         "os": detect_os(),
         "os_release": platform.release(),  # e.g. 11 (Win11), 24.04 (Ubuntu)
         "arch": detect_arch(),
@@ -357,6 +413,10 @@ def detect() -> dict:
         "text_model": prof["text"],
         "note": prof["note"],
     }
+    backend, why = recommend_asr_backend(d)
+    d["recommended_asr_backend"] = backend
+    d["recommended_backend_reason"] = why
+    return d
 
 
 # Step 2's text model when detection cannot run at all (stripped container with
@@ -392,9 +452,25 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
     ap.add_argument("--key", help="print a single field (asr_model, compute_type, "
                                   "device, vlm_model, text_model, profile, ram_gb, "
-                                  "os_release, cuda_ok)")
+                                  "os_release, cuda_ok, recommended_asr_backend)")
+    ap.add_argument("--recommend", action="store_true",
+                    help="print the recommended ASR backend and why, plus a "
+                         "ready-to-paste command. Runs no ASR.")
     args = ap.parse_args()
     d = detect()
+    if args.recommend:
+        backend = d["recommended_asr_backend"]
+        print(f"recommended ASR backend: {backend}")
+        print(f"  {d['recommended_backend_reason']}")
+        if backend == "funasr":
+            print("\n  batch_run.py --asr-backend funasr --asr-python <funasr-venv>/Scripts/python.exe")
+        elif backend == "openai-api":
+            print("\n  asr_caption.py --backend openai-api --api-base <URL> "
+                  "--api-model <MODEL> --api-key-env <ENV_VAR>")
+        else:
+            print("\n  (default) batch_run.py --asr-model "
+                  f"{d['asr_model']}")
+        return 0
     if args.key:
         if args.key not in d:
             print(f"[err] unknown key '{args.key}'. valid: {sorted(d)}", file=sys.stderr)
