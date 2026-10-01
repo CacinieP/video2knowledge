@@ -42,7 +42,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_knowledge import ask_llm, fmt_mmss, load_subtitles, ping  # noqa: E402
+from build_knowledge import (ask_llm, fmt_mmss, has_usable_speech,  # noqa: E402
+                             load_subtitles, ping)
 from extract_frames import cap_by_time  # noqa: E402
 from hardware_profile import default_text_model  # noqa: E402
 
@@ -206,8 +207,17 @@ def build_sections(host: str, model: str | None, vlm_model: str | None,
     Sections are independent, so they are generated in parallel (each is one
     text-LLM call plus optionally one VLM call; Ollama batches concurrent
     requests). ex.map preserves input order regardless of completion order.
+
+    A transcript with no usable speech still gets its frames and VLM
+    descriptions — for a wordless video those are the whole point of the note.
+    What it does *not* get is a written "note" per node: asking a small model
+    to condense "嗯嗯，背" produces a study tip it invented. Measured over the
+    no-speech half of a music-course library, that was 125 fabricated node
+    bodies across 11 notes, one of them "用艾宾浩斯记忆曲线安排复习时间" from a
+    two-syllable transcript. The picture is real; the sentence under it is not.
     """
     n = len(keyframes)
+    speech = has_usable_speech(segs)
     items = []
     for i, fr in enumerate(keyframes):
         t0 = fr["t"]
@@ -219,7 +229,12 @@ def build_sections(host: str, model: str | None, vlm_model: str | None,
 
     def one(item):
         i, fr, t0, window, narration = item
-        title, note = section_note(host, model, narration, lang)
+        if speech:
+            title, note = section_note(host, model, narration, lang)
+        else:
+            # No usable transcript: the frame description is the only honest
+            # thing this node can say, and it is real. Ask for nothing else.
+            title = note = ""
         desc = ""
         if describe and vlm_model:
             try:
@@ -227,11 +242,13 @@ def build_sections(host: str, model: str | None, vlm_model: str | None,
             except Exception as e:
                 print(f"[notes] frame description failed @ {t0:.0f}s: {e}",
                       file=sys.stderr)
-        excerpt = " / ".join(s["text"].strip() for s in window[:3]
-                             if s.get("text", "").strip())
+        # Quoting "嗯嗯嗯" as 原声 would present a hallucination as a citation.
+        excerpt = "" if not speech else " / ".join(
+            s["text"].strip() for s in window[:3] if s.get("text", "").strip())
         sec = {"t": t0, "file": fr["file"], "desc": desc,
                "title": title, "note": note, "excerpt": excerpt,
-               "n_lines": len([s for s in window if s.get("text", "").strip()])}
+               "n_lines": len([s for s in window if s.get("text", "").strip()]),
+               "speech": speech}
         print(f"[notes] section {i+1}/{n} @ {fmt_mmss(t0)}"
               f" ({sec['n_lines']} lines"
               f"{', VLM' if desc else ''}{', LLM' if title else ''})",
@@ -262,6 +279,12 @@ def render_markdown(sections: list[dict], meta: dict, out_dir: Path,
     if not verbatim:
         lines += ["> 精简版：只保留画面与提炼要点，原始逐字引用见 "
                   "`notes.md`。", ""]
+    if sections and not sections[0].get("speech", True):
+        # Say it once, at the top. Otherwise a run of 画面-only nodes reads as
+        # a broken export rather than as what it is: a visual note for a video
+        # that has no narration to condense.
+        lines += ["> **纯画面笔记**：本视频没有可识别的讲解旁白，节点只保留"
+                  "画面与画面描述，没有提炼要点和原声引用。", ""]
     for sec in sections:
         ts = fmt_mmss(sec["t"])
         # A node with no narration still has a picture worth showing, so fall
