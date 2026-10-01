@@ -866,8 +866,62 @@ STATUS_OK = "ok"                # real content
 STATUS_DEGRADED = "degraded"    # model unreachable / returned nothing usable
 STATUS_NO_SPEECH = "no-speech"  # transcript empty; placeholder is correct
 
+# --- speech density ----------------------------------------------------------
+#
+# Zero segments is not the only way a transcript can be useless. On a
+# piano-course library, 13 clips had an audio track but no narration — just
+# performance. Paraformer does not return nothing for those; it hallucinates the
+# playing into vocalisations, so the segment list is non-empty and the
+# `n_segments == 0` guard never fires:
+#
+#     第27节  3 segments,  6 characters, 5 of them filler  ->  8 knowledge cards
+#     第28节  1 segment,   6 characters, 2 of them filler  ->  9 knowledge cards
+#     第19节 14 segments, 65 characters, 40 of them filler ->  0 cards
+#
+# Six characters of "嗯嗯嗯背谱。" cannot support eight cards. The model does not
+# decline — it fills the template from the title and the topic words it can
+# scrape out of the filler. That is the same fabrication the empty-transcript
+# case was fixed for, one step further along: now it looks like a success.
+#
+# So the guard counts characters that could plausibly be words, after removing
+# interjections and vocalisations. Measured on the library that separates
+# cleanly with room on both sides: the worst junk transcript had 25 meaningful
+# characters, the shortest genuine one had 63.
+FILLER_CHARS = set("嗯啊哦呃啦哎呐嘛哼唔哈呵唉嘿咦噢诶喔呀噢唉嗯呃")
+MIN_MEANINGFUL_CHARS = int(os.environ.get("V2K_MIN_SPEECH_CHARS", "40"))
 
-def knowledge_doc_status(analysis: dict, n_segments: int) -> str:
+
+def count_meaningful_chars(segs: list[dict]) -> tuple[int, int]:
+    """Return (meaningful, total) character counts over a segment list.
+
+    "Meaningful" = anything that is not punctuation/whitespace and not a bare
+    interjection or vocalisation. Counting the run of syllables rather than
+    filtering a fixed stopword list keeps this language-agnostic: the same
+    function catches an English "The the the" just as it catches "嗯嗯嗯".
+    """
+    meaningful = total = 0
+    for seg in segs:
+        for ch in (seg.get("text") or ""):
+            if ch.isspace() or not ch.isalnum():
+                continue          # punctuation and whitespace carry no content
+            total += 1
+            if ch not in FILLER_CHARS:
+                meaningful += 1
+    return meaningful, total
+
+
+def has_usable_speech(segs: list[dict]) -> bool:
+    """True when the transcript holds enough real words to summarise."""
+    if not segs:
+        return False
+    meaningful, total = count_meaningful_chars(segs)
+    if not total:
+        return False
+    return meaningful >= MIN_MEANINGFUL_CHARS
+
+
+def knowledge_doc_status(analysis: dict, n_segments: int,
+                        segs: list[dict] | None = None) -> str:
     """Classify a finished knowledge doc so a batch driver can trust it.
 
     `n_segments` is the subtitle segment count the document was built from, and
@@ -887,7 +941,7 @@ def knowledge_doc_status(analysis: dict, n_segments: int) -> str:
     """
     if is_degraded(analysis):
         return STATUS_DEGRADED
-    if n_segments == 0:
+    if n_segments == 0 or (segs is not None and not has_usable_speech(segs)):
         summary = str(analysis.get("summary", ""))
         return STATUS_NO_SPEECH if NO_SPEECH_MARKER in summary else STATUS_DEGRADED
     return STATUS_OK
@@ -1147,9 +1201,22 @@ def main() -> int:
     # "[mm:ss] " prefix, so a transcript of pure whitespace still looks non-empty
     # ("[00:00]    ".strip() is truthy) and the guard would silently not fire.
     spoken = "".join((s.get("text") or "").strip() for s in segs)
-    if not segs or not spoken:
-        print(f"[v2k] no speech recognised in {args.subtitles.name} "
-              f"(0 segments) — skipping the LLM.\n"
+    # Path 3 is exempt from the density check: there the visual OCR text is a
+    # legitimate content source, so a thin ASR transcript does not mean the
+    # document would be empty.
+    no_speech = (not segs or not spoken
+                 or (not args.merged and not has_usable_speech(segs)))
+    if no_speech:
+        if segs and spoken:
+            meaningful, total = count_meaningful_chars(segs)
+            why = (f"only {meaningful} meaningful of {total} characters "
+                   f"across {len(segs)} segments "
+                   f"(threshold {MIN_MEANINGFUL_CHARS}) — that is instrumental "
+                   f"audio transcribed as vocalisation, not narration")
+        else:
+            why = "0 segments"
+        print(f"[v2k] no usable speech in {args.subtitles.name} "
+              f"({why}) — skipping the LLM.\n"
               f"      This video has no usable narration; use Path 1/3 "
               f"(mm_caption.py / build_notes.py) instead.", file=sys.stderr)
         analysis = {

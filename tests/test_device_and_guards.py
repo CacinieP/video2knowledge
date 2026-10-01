@@ -146,8 +146,13 @@ def test_blank_text_segments_also_skip_the_llm(tmp_path, monkeypatch):
 
 def test_real_transcript_still_calls_the_llm(tmp_path, monkeypatch):
     """The guard must not swallow normal videos."""
+    # Several segments of realistic length, not one 8-character line: a real
+    # lecture clears the speech-density floor, and this test is about that.
     subs = _write_subtitles(tmp_path / "subtitles.json", [
-        {"start": 0.0, "end": 2.0, "text": "今天讲音阶的指法。"}])
+        {"start": 0.0, "end": 2.0, "text": "今天讲音阶的指法，先看右手的基本手型。"},
+        {"start": 2.0, "end": 4.0, "text": "拇指和食指的间距决定了能不能连续弹。"},
+        {"start": 4.0, "end": 6.0, "text": "然后我们加上中指和无名指一起练习。"},
+    ])
     out = tmp_path / "out"
     seen = {}
 
