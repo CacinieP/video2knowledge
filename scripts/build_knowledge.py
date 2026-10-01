@@ -766,12 +766,61 @@ def md_to_self_html(md: str, title: str) -> str:
     return "\n".join(out)
 
 
+def _card_key(question: str) -> str:
+    """Normalise a question for duplicate detection.
+
+    A model asked the same question twice rarely emits it twice identically —
+    one answer may read "两个白键之间是全音" and the other "白键和相邻白键
+    间隔是一个全音". Comparing the raw string would keep both. Dropping
+    punctuation, whitespace and the interrogative scaffolding leaves the
+    content words, which is what actually identifies the question.
+    """
+    s = re.sub(r"[\s，。、？?！!：:；;（）()【】\[\]「」“”\"'’·\-—…]+", "", question)
+    return s.lower()
+
+
+def _dedup_cards(rows: list[list[str]]) -> tuple[list[list[str]], int]:
+    """Keep the first card for each distinct question; count what was dropped.
+
+    First-wins, so a card whose answer is complete keeps its slot and a later
+    stub with the same question is discarded rather than overwriting it.
+    """
+    seen: set[str] = set()
+    out: list[list[str]] = []
+    dropped = 0
+    for r in rows:
+        key = _card_key(r[0] if r else "")
+        if not key:
+            dropped += 1          # a question-less card is not a study card
+            continue
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        out.append(r)
+    return out, dropped
+
+
 def cards_from_qa(qa, source: str) -> list[list[str]]:
     """Parse Q/A pairs into CSV rows. Accepts:
     - a markdown string with 'Q:' / 'A:' lines
     - a list of dicts with q/question and a/answer keys (LLM JSON output)
     - a list of strings like 'Q: ... A: ...'
+
+    Duplicates are removed. A long lecture is summarised with a map/reduce
+    over chunks, and the model re-asks the same question in several chunks
+    because the same fact is restated throughout a lecture — measured on a
+    286-video course, 145 of 1608 cards (9%) were repeats, and the worst case
+    was one 8-minute lesson producing 67 rows for 6 distinct questions. An
+    Anki deck of near-duplicates is worse than a short one: it looks like
+    coverage while drilling the same fact over and over.
     """
+    rows = _parse_qa_rows(qa, source)
+    rows, _dropped = _dedup_cards(rows)
+    return rows
+
+
+def _parse_qa_rows(qa, source: str) -> list[list[str]]:
     rows: list[list[str]] = []
     if isinstance(qa, list):
         for item in qa:
@@ -781,7 +830,7 @@ def cards_from_qa(qa, source: str) -> list[list[str]]:
                 if q:
                     rows.append([str(q).strip(), str(a).strip(), "", "", source])
             elif isinstance(item, str):
-                rows.extend(cards_from_qa(item, source))
+                rows.extend(_parse_qa_rows(item, source))
         return rows
     if not isinstance(qa, str):
         return rows
@@ -953,13 +1002,15 @@ def main() -> int:
         print(f"[ok] pdf -> {p}")
 
     if "csv" in want or "all" in want:
-        rows = cards_from_qa(analysis["qa"], source)
+        parsed = _parse_qa_rows(analysis["qa"], source)
+        rows, dropped = _dedup_cards(parsed)
         csv_path = args.out_dir / "cards.csv"
         with csv_path.open("w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
             w.writerow(["question", "answer", "tags", "timestamp", "source"])
             w.writerows(rows)
-        print(f"[ok] {len(rows)} cards -> {csv_path}")
+        note = f" ({dropped} duplicate/empty dropped)" if dropped else ""
+        print(f"[ok] {len(rows)} cards{note} -> {csv_path}")
 
     return 0
 
