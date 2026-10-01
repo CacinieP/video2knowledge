@@ -264,7 +264,10 @@ def render_markdown(sections: list[dict], meta: dict, out_dir: Path,
                   "`notes.md`。", ""]
     for sec in sections:
         ts = fmt_mmss(sec["t"])
-        heading = sec["title"] or "画面节点"
+        # A node with no narration still has a picture worth showing, so fall
+        # back to what the VLM read off it rather than printing the literal
+        # "画面节点" placeholder in every such heading.
+        heading = sec["title"] or sec["desc"] or "画面节点"
         lines.append(f"## [{ts}] {heading}")
         lines.append("")
         try:  # relative ref so the md renders wherever the frames dir travels
@@ -375,13 +378,48 @@ def main() -> int:
     # cluster-stratified cap (shared with extract_frames.py): every change
     # burst keeps its settled final frame, remaining budget split proportionally
     # — an animation burst no longer starves isolated key slides of sections.
+    duration = segs[-1]["end"] if segs else 0.0
     if args.max_frames <= 0:
-        duration = segs[-1]["end"] if segs else 0.0
         args.max_frames = auto_node_budget(duration)
         print(f"[notes] auto node budget: {args.max_frames} "
               f"(~1 per {NODE_SECONDS}s of {fmt_mmss(duration)})", file=sys.stderr)
+    # Key frames that land past the last subtitle cannot have a narration
+    # window at all — `build_sections` looks forward to the next key frame, so
+    # their window is empty by construction and the node renders as a bare
+    # image with no text under it.
+    #
+    # This is not hypothetical: subtitles end at the last spoken word, while
+    # frame extraction runs to the end of the file. Measured on an 18:28
+    # lecture, 4 of 24 nodes sat at 1110-1113s against a transcript ending at
+    # 1108.7s — a quarter of the note spent on frames that cannot say anything.
+    # The tolerance covers a subtitle that ends a hair before the last frame of
+    # its own sentence.
+    if segs:
+        last_spoken = segs[-1]["end"]
+        before = len(frames)
+        frames = [fr for fr in frames if fr["t"] <= last_spoken + 1.0]
+        if len(frames) < before:
+            print(f"[notes] dropped {before - len(frames)} key frame(s) past the "
+                  f"last subtitle ({fmt_mmss(last_spoken)}) — no narration possible",
+                  file=sys.stderr)
+        if not frames:
+            print(f"[err] every key frame is past the last subtitle "
+                  f"({fmt_mmss(last_spoken)}); the note would be empty",
+                  file=sys.stderr)
+            return 2
+
     keep_ts = set(cap_by_time([fr["t"] for fr in frames], args.max_frames))
     frames = [fr for fr in frames if fr["t"] in keep_ts]
+    if len(frames) < args.max_frames:
+        # The budget is a ceiling, not a target. Perception dedup found fewer
+        # distinct frames than the budget asks for, and a node needs a real
+        # image — so the note is frame-limited, not evenly spaced. Say so
+        # rather than leaving the user to wonder why 18 minutes yielded 24
+        # "evenly spaced" nodes that are visibly bunched.
+        print(f"[notes] frame-limited: only {len(frames)} distinct key frames in "
+              f"{fmt_mmss(duration)} (budget was {args.max_frames}) — the video "
+              f"changes less often than {NODE_SECONDS}s, so nodes follow the "
+              f"actual visual changes instead of a clock.", file=sys.stderr)
 
     model = args.model if ping(args.host) else None
     vlm_model = None
