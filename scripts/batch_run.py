@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """batch_run.py — batch-process a whole video library through the full pipeline.
 
 Designed for course libraries (e.g. a CPA term of lectures): walks a root dir
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
 import subprocess
 import sys
@@ -92,6 +93,16 @@ class Batch:
     def __init__(self, args):
         self.args = args
         self.py = venv_python()
+        # The ASR step may need a different interpreter than the rest: funasr
+        # pins an old tokenizers and pulls its own torch, so it lives in its own
+        # venv while every other step stays on the main one.
+        self.asr_py = (args.asr_python or self.py)
+        if args.asr_backend == "funasr":
+            if not args.asr_python:
+                log("A", "WARN: --asr-backend funasr without --asr-python; using the "
+                         "main venv, which usually cannot import funasr")
+            elif not Path(self.asr_py).is_file():
+                raise SystemExit(f"--asr-python not found: {self.asr_py}")
         self.out_root: Path = args.out_root
         self.out_root.mkdir(parents=True, exist_ok=True)
         self.summary = self.out_root / "summary.csv"
@@ -162,9 +173,10 @@ class Batch:
         lg = run_dir / "stageA.log"
         log("A", f"ASR start: {video.name}")
         s = self.run(
-            [self.py, str(HERE / "asr_caption.py"),
+            [self.asr_py, str(HERE / self._asr_script()),
              "--video", str(video), "--out-dir", str(run_dir),
-             "--model", self.args.asr_model, "--language", "zh",
+             *self._asr_model_args(),
+             "--language", "zh",
              "--hotwords", self._effective_hotwords(run_dir)], lg, "A")
         subs = run_dir / "subtitles.json"
         n = len(__import__("json").loads(subs.read_text(encoding="utf-8"))
@@ -177,6 +189,17 @@ class Batch:
             wav.unlink()
         (run_dir / ".asr_done").write_text(f"segments={n}\n", encoding="utf-8")
         log("A", f"ASR done: {video.name} ({n} segs, {s:.0f}s)")
+
+    def _asr_script(self) -> str:
+        """funasr is a different engine, not just a different model size."""
+        return "asr_funasr.py" if self.args.asr_backend == "funasr" else "asr_caption.py"
+
+    def _asr_model_args(self) -> list[str]:
+        # paraformer-large has no --model/--device/--compute-type: it is
+        # zh-only and runs on CPU. Passing whisper's flags to it is an error.
+        if self.args.asr_backend == "funasr":
+            return []
+        return ["--model", self.args.asr_model]
 
     # --- stage B: vision -> fusion -> artifacts --------------------------------
     def stage_b(self, video: Path, run_dir: Path) -> None:
@@ -209,9 +232,9 @@ class Batch:
                 log("B", f"ASR verify: coverage too low, re-transcribing {name} "
                          f"with OCR hotwords")
                 self.run(
-                    [self.py, str(HERE / "asr_caption.py"),
+                    [self.asr_py, str(HERE / self._asr_script()),
                      "--video", str(video), "--out-dir", str(run_dir),
-                     "--model", self.args.asr_model, "--language", "zh",
+                     *self._asr_model_args(), "--language", "zh",
                      "--hotwords", "@" + str(run_dir / "ocr_hotwords.txt")],
                     lg, "B")
             elif rc not in (0, 3):
@@ -272,8 +295,20 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Batch course-library processor")
     ap.add_argument("--root", required=True, type=Path, help="video library root")
     ap.add_argument("--out-root", type=Path, default=Path("runs/batch"))
-    ap.add_argument("--asr-model", default="small")
-    ap.add_argument("--text-model", default=default_text_model(),
+    ap.add_argument("--asr-model", default="small",
+                    help="faster-whisper size (ignored when --asr-backend=funasr)")
+    ap.add_argument("--asr-backend", default="whisper", choices=["whisper", "funasr"],
+                    help="whisper = faster-whisper (GPU, default); funasr = "
+                         "Paraformer-large (CPU, better on Mandarin homophones — "
+                         "see asr_funasr.py; needs its own venv, see --asr-python)")
+    ap.add_argument("--asr-python", default="",
+                    help="interpreter for the ASR step only — required with "
+                         "--asr-backend funasr, whose torch/funasr do not "
+                         "co-install with the main venv")
+    # V2K_TEXT_MODEL overrides the profile default so one batch run can pin a
+    # model without editing the code or the host's detected hardware.
+    ap.add_argument("--text-model",
+                    default=os.environ.get("V2K_TEXT_MODEL") or default_text_model(),
                     help="Ollama text model for knowledge build + notes "
                          "(default: the profile's text model — "
                          "openbmb/minicpm5-2b on low/mid)")
