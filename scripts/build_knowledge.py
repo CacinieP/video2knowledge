@@ -439,7 +439,7 @@ def _even_spread_ts(items: list[str], budget: int) -> str:
 
 
 def build_analysis(host: str, model: str | None, raw_text: str, source: str,
-                   lang: str = "zh", char_limit: int = 8000,
+                   lang: str = "zh", char_limit: int = 0,
                    cache: _LLMCache | None = None) -> dict:
     """Ask the LLM for summary / timeline / key points / QA / glossary.
 
@@ -452,9 +452,12 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     language so a Chinese-centric 1B model does not hallucinate cross-language
     content when summarizing foreign-language subtitles.
 
-    `char_limit` truncates the raw_text prefix fed to the model. The default 8000
-    fits a small model's context comfortably. In merged mode (audio+visual), the
-    caller passes a larger limit since the interleaved text is the primary signal.
+    `char_limit` bounds the raw_text fed to the model. It is NOT a coverage
+    knob: passing a value below the input length drops the tail of the lecture
+    silently (a warning is printed when it happens). The default leaves the text
+    intact and lets the map-reduce path chunk it, so coverage is complete and
+    the cap only bounds per-call context. Pass a lower value to trade
+    completeness for speed.
     """
     fields = {
         "summary": "", "timeline": "", "key_points": "",
@@ -465,7 +468,20 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
 
     ask = cache.ask if cache else (lambda h, prompt: ask_llm(h, model, prompt))
 
-    sub = raw_text[:char_limit]
+    # Do NOT truncate here. The map-reduce machinery below already handles long
+    # input by chunking into CHUNK-sized pieces and merging, which keeps each
+    # LLM call on a context the small models handle well. Slicing to a small
+    # char_limit first silently threw away the rest of the lecture AND — because
+    # long_mode needs len(sub) > CHUNK * 1.5 — made the map-reduce branch
+    # unreachable in the plain (non-merged) Path 2 flow. Measured on a 35-minute
+    # lesson: 12241 chars of subtitle, 8000 reached the model, 35% of the
+    # content never seen, no warning.
+    if char_limit and len(raw_text) > char_limit:
+        print(f"[v2k] WARNING: char_limit={char_limit} truncated "
+              f"{len(raw_text) - char_limit} of {len(raw_text)} subtitle chars "
+              f"— pass a larger --char-limit for full coverage.",
+              file=sys.stderr)
+    sub = raw_text[:char_limit] if char_limit else raw_text
     # Bilingual prompt sets. Match `lang` to the video's language to stop a
     # Chinese-centric small model from hallucinating cross-language content.
     TASKS = {
@@ -870,7 +886,13 @@ def main() -> int:
     else:
         segs, source = load_subtitles(args.subtitles)
         raw_text = "\n".join(f"[{fmt_mmss(s['start'])}] {s['text']}" for s in segs)
-        char_limit = args.char_limit or 8000
+        # No default cap here. A 8000-char default (the old value) silently
+        # dropped the tail of every lecture longer than ~25 minutes AND, because
+        # long_mode needs len(sub) > CHUNK * 1.5, kept the map-reduce branch
+        # unreachable on this path. 0 means "feed it all"; the chunker bounds
+        # each individual call. --char-limit still overrides, for users who
+        # would rather trade coverage for speed.
+        char_limit = args.char_limit or 0
 
     title = args.title or args.subtitles.stem.replace("_", " ")
     duration = segs[-1]["end"] if segs else 0.0
