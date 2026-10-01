@@ -39,11 +39,12 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_knowledge import (ask_llm, fmt_mmss, has_usable_speech,  # noqa: E402
-                             load_subtitles, ping)
+from build_knowledge import (ask_llm, configure_cloud, fmt_mmss,  # noqa: E402
+                             has_usable_speech, load_subtitles, ping, _CLOUD)
 from extract_frames import cap_by_time  # noqa: E402
 from hardware_profile import default_text_model  # noqa: E402
 
@@ -104,6 +105,8 @@ def supports_vision(host: str, model: str) -> bool:
 
 def describe_frame(host: str, model: str, jpg: Path) -> str:
     """One-line VLM description of a key frame (used for the 画面 line)."""
+    if _CLOUD["api_base"]:
+        return describe_frame_cloud(model, jpg)
     b64 = base64.b64encode(jpg.read_bytes()).decode()
     r = http_generate(host, {"model": model, "prompt": DESC_PROMPT, "images": [b64],
                              "stream": False, "think": False,
@@ -112,6 +115,84 @@ def describe_frame(host: str, model: str, jpg: Path) -> str:
     if "</think>" in text:  # some models leak the reasoning chain
         text = text.rsplit("</think>", 1)[1].strip()
     return text.replace("\n", " ")
+
+
+# --- cloud VLM (OpenAI-compatible, same endpoint as the text LLM) ------------
+#
+# When --api-base is set the text side already routes through build_knowledge's
+# configure_cloud()/ask_llm(). The 画面 descriptions were still hitting the
+# Ollama /api/generate shape (base64 "images" array), which no /chat/completions
+# provider understands — so a cloud run rendered every node without its frame
+# description unless a local Ollama happened to be running. Same probe-once
+# discipline as supports_vision(): never find out per-frame in a retry loop.
+
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAE"
+    "hQGAhKmMIQAAAABJRU5ErkJggg=="  # 1x1 px — exists purely to be accepted
+)
+
+
+def _cloud_chat(model: str, content, max_tokens: int, temperature: float):
+    """One /chat/completions call. `content` is either a string or an
+    OpenAI vision content array. Returns message.content or raises."""
+    import urllib.error
+    import urllib.request
+    payload = {"model": model, "stream": False, "temperature": temperature,
+               "max_tokens": max_tokens,
+               "messages": [{"role": "user", "content": content}]}
+    base = _CLOUD["api_base"].rstrip("/")
+    req = urllib.request.Request(
+        f"{base}/chat/completions", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {_CLOUD['api_key']}"})
+    last = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=240) as r:
+                resp = json.loads(r.read().decode())
+            msg = resp.get("choices", [{}])[0].get("message", {})
+            text = re.sub(r"<think>.*?</think>", "", msg.get("content") or "",
+                          flags=re.DOTALL).strip()
+            if not text:
+                raise ValueError("empty content in cloud response")
+            return text
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError,
+                ValueError) as e:
+            last = e
+            code = getattr(e, "code", 0) if isinstance(e, urllib.error.HTTPError) else 0
+            if attempt == 0 and (code in (408, 429) or code >= 500):
+                time.sleep(5)
+                continue
+            raise
+    raise RuntimeError(f"cloud VLM request failed — {last}")
+
+
+def describe_frame_cloud(model: str, jpg: Path) -> str:
+    b64 = base64.b64encode(jpg.read_bytes()).decode()
+    content = [{"type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+               {"type": "text", "text": DESC_PROMPT}]
+    text = _cloud_chat(model, content, max_tokens=1024, temperature=0.2)
+    return text.replace("\n", " ")
+
+
+def supports_vision_cloud(model: str) -> bool:
+    """Probe the cloud model with a 1x1 image once per run.
+
+    The reasoning models common on /chat/completions endpoints burn budget on
+    thinking before answering; 512 tokens covers the probe with room to spare
+    (measured: glm-5.3-flash used ~150 reasoning tokens for this yes/no).
+    """
+    try:
+        content = [{"type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{_TINY_PNG_B64}"}},
+                   {"type": "text", "text": "图里是什么颜色？只答两个字。"}]
+        _cloud_chat(model, content, max_tokens=512, temperature=0.0)
+        return True
+    except Exception as e:
+        print(f"[notes] cloud VLM probe failed for '{model}': "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+        return False
 
 
 def _strip_line_label(line: str) -> str:
@@ -378,6 +459,22 @@ def main() -> int:
     ap.add_argument("--vlm-model", default=None,
                     help="VLM for frame descriptions (default: same as --model; "
                          "a vision-capable model is required)")
+    ap.add_argument("--api-base", default=os.environ.get("V2K_LLM_API_BASE", ""),
+                    help="use an OpenAI-compatible /chat/completions endpoint "
+                         "instead of local Ollama for BOTH the section titles/notes "
+                         "and the 画面 VLM descriptions (default: unset = local "
+                         "Ollama). Vendor-neutral: any compatible URL works.")
+    ap.add_argument("--api-model", default=os.environ.get("V2K_LLM_API_MODEL", ""),
+                    help="model name at --api-base (required with it)")
+    ap.add_argument("--vlm-api-model",
+                    default=os.environ.get("V2K_VLM_API_MODEL", ""),
+                    help="vision model at --api-base for 画面 descriptions "
+                         "(default: same as --api-model — correct when that model "
+                         "is multimodal, e.g. glm-5.3-flash)")
+    ap.add_argument("--api-key-env", default=os.environ.get("V2K_LLM_API_KEY_ENV",
+                                                            "OPENAI_API_KEY"),
+                    help="env var holding the API key (default OPENAI_API_KEY). "
+                         "The key is never read from argv.")
     ap.add_argument("--title", default=None, help="note title (default: video basename)")
     ap.add_argument("--lang", choices=["zh", "en"], default="zh",
                     help="prompt/output language (default zh)")
@@ -444,20 +541,39 @@ def main() -> int:
               f"changes less often than {NODE_SECONDS}s, so nodes follow the "
               f"actual visual changes instead of a clock.", file=sys.stderr)
 
-    model = args.model if ping(args.host) else None
+    if args.api_base and not args.api_model:
+        print("[err] --api-base also needs --api-model (or $V2K_LLM_API_MODEL)",
+              file=sys.stderr)
+        return 2
+    if args.api_base:
+        # mirrors build_knowledge.py: ask_llm() routes to the cloud endpoint
+        # and ping() turns true, so every existing gate keeps working
+        configure_cloud(args.api_base, args.api_model, args.api_key_env)
+
+    cloud = bool(_CLOUD["api_base"])
+    model = (args.api_model or args.model) if (cloud or ping(args.host)) else None
     vlm_model = None
     if args.describe_frames:
-        vlm_model = args.vlm_model or args.model
-        if vlm_model and not supports_vision(args.host, vlm_model):
-            print(f"[notes] {vlm_model} is text-only — skipping 画面 descriptions "
-                  f"instead of failing once per key frame. Pass --vlm-model "
-                  f"<multimodal>, e.g. openbmb/minicpm-v4.6:latest, to enable them.",
-                  file=sys.stderr)
-            vlm_model = None
-        if not ping(args.host):
-            vlm_model = None
+        if cloud:
+            vlm_model = args.vlm_api_model or args.api_model
+            if vlm_model and not supports_vision_cloud(vlm_model):
+                print(f"[notes] {vlm_model} failed the cloud vision probe — "
+                      f"skipping 画面 descriptions instead of failing once per "
+                      f"key frame. Pass --vlm-api-model <multimodal> to enable "
+                      f"them.", file=sys.stderr)
+                vlm_model = None
+        else:
+            vlm_model = args.vlm_model or args.model
+            if vlm_model and not supports_vision(args.host, vlm_model):
+                print(f"[notes] {vlm_model} is text-only — skipping 画面 descriptions "
+                      f"instead of failing once per key frame. Pass --vlm-model "
+                      f"<multimodal>, e.g. openbmb/minicpm-v4.6:latest, to enable them.",
+                      file=sys.stderr)
+                vlm_model = None
+            if not ping(args.host):
+                vlm_model = None
     if not model:
-        print("[notes] Ollama unreachable — degrading to raw excerpts "
+        print("[notes] no LLM reachable — degrading to raw excerpts "
               "(titles/notes marked accordingly)", file=sys.stderr)
 
     print(f"[notes] {len(frames)} key frames x {len(segs)} segments; "
