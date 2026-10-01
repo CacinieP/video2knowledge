@@ -26,11 +26,16 @@ import build_knowledge as bk  # noqa: E402
 
 
 def _subs(tmp_path: Path, n: int = 5) -> Path:
+    # The text has to clear build_knowledge's speech-density floor, otherwise
+    # these tests would exercise the no-speech path instead of the degradation
+    # path they are about. 5 segments x 14 meaningful characters = 70, over the
+    # floor of 40 with room to spare. A real lecture segment is about this long.
     p = tmp_path / "subtitles.json"
     p.write_text(json.dumps({
         "language": "zh", "duration": 60.0,
         "segments": [{"start": i * 10.0, "end": i * 10.0 + 9.0,
-                      "text": f"第{i}句测试字幕"} for i in range(n)],
+                      "text": f"第{i}句是测试用的字幕内容示例"}
+                     for i in range(n)],
     }, ensure_ascii=False), encoding="utf-8")
     return p
 
