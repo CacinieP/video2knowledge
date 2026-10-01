@@ -448,13 +448,52 @@ BACKENDS: dict[str, Callable] = {
 }
 
 
+class _SecretSafeParser(argparse.ArgumentParser):
+    """Never print the value that follows a key-shaped flag.
+
+    argparse's error path quotes every unrecognised token together with its
+    value. For an ordinary typo that is exactly what you want. For a mistyped
+    `--api-key sk-…` it prints the secret to stderr, into a log, and into
+    whatever captures the output — the one place it had not already been.
+
+    So: if a token looks like a key flag and is not a real option here, its
+    value is replaced before argparse ever formats a message. The error still
+    names the flag the user mistyped, which is the part they need.
+    """
+
+    _KEYISH = re.compile(r"^--[A-Za-z0-9-]*key[A-Za-z0-9-]*$", re.IGNORECASE)
+    _REAL = frozenset({"--api-key-env", "--keep-wav"})
+
+    def parse_known_args(self, args=None, namespace=None):
+        argv = list(sys.argv[1:] if args is None else args)
+        known = {a.option_strings[0] for a in self._actions}
+        for i, tok in enumerate(argv[:-1]):
+            if tok in self._REAL or tok in known:
+                continue
+            if self._KEYISH.match(tok):
+                argv[i + 1] = "<redacted: it looked like a key>"
+        return super().parse_known_args(argv, namespace)
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    # allow_abbrev=False is a security control, not a style choice: with
-    # abbreviation on, `--api-key sk-…` is an unambiguous prefix of
-    # `--api-key-env`, so argparse would happily accept the secret as the name
-    # of an env var — putting it in the process list and shell history, and then
-    # echoing it back in the "needs env var '<secret>'" error.
-    ap = argparse.ArgumentParser(
+    # Two separate controls, and it is worth being precise about which one does
+    # what, because neither of them is a complete fix on its own.
+    #
+    # 1. allow_abbrev=False stops the *misuse*: with abbreviation on,
+    #    `--api-key sk-…` is an unambiguous prefix of `--api-key-env`, so
+    #    argparse accepts the secret as the NAME of an environment variable and
+    #    the "needs env var 'sk-…'" error then quotes it back at the user.
+    #
+    # 2. _SecretSafeParser below stops the *echo*. allow_abbrev on its own does
+    #    not: argparse still reports "unrecognized arguments: --api-key
+    #    sk-…", printing the value just as loudly. Verified, not assumed.
+    #
+    # What neither can do is keep the secret out of the process list or your
+    # shell history — by the time any argument parser runs, the command line
+    # already contains it. That is why the help text says to pass the NAME of an
+    # env var and never the key itself, and why the key is read from the
+    # environment rather than from argv.
+    ap = _SecretSafeParser(
         allow_abbrev=False,
         description="ASR → timestamped subtitles. Backends: faster-whisper "
                     "(default) / openai-api / mimo-asr. For FunASR use "
