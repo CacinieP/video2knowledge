@@ -336,15 +336,19 @@ def main() -> int:
     # cluster-stratified cap (shared with extract_frames.py): every change
     # burst keeps its settled final frame, remaining budget split proportionally
     # — an animation burst no longer starves isolated key slides of sections.
-    # --max-frames 0 (default) = AUTO: one node per ~90s of video, clamped
-    # 8-48 (the old 1-per-4min gave a 37min lecture only 9 illustrated nodes
-    # — users read that as "frames missing" even though all 153 extracted
-    # frames feed the knowledge fusion; the notes are the visible layer).
+    #
+    # --max-frames 0 (default) = AUTO: one node per ~45s of video, clamped
+    # 12-60. The old 1-per-4min gave a 37min lecture only 9 illustrated nodes,
+    # and the 1-per-90s that followed still floored at 8 — which is most of a
+    # typical clip: measured over a 306-video / 61.5h library the mean length
+    # is 12.1 min, so the floor bound the majority of the library to 8 nodes
+    # no matter how long the video ran. The floor is what had to move, not the
+    # ceiling: at 45s a 12-min clip gets 16 nodes and a 41-min one gets 55.
     if args.max_frames <= 0:
         duration = segs[-1]["end"] if segs else 0.0
-        args.max_frames = max(8, min(48, round(duration / 90)))
+        args.max_frames = max(12, min(60, round(duration / 45)))
         print(f"[notes] auto node budget: {args.max_frames} "
-              f"(~1 per 90s of {fmt_mmss(duration)})", file=sys.stderr)
+              f"(~1 per 45s of {fmt_mmss(duration)})", file=sys.stderr)
     keep_ts = set(cap_by_time([fr["t"] for fr in frames], args.max_frames))
     frames = [fr for fr in frames if fr["t"] in keep_ts]
 
