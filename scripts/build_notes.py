@@ -132,27 +132,81 @@ _TINY_PNG_B64 = (
 )
 
 
+def _minimax_live_token() -> str:
+    """Read the desktop OAuth access token, which rotates every ~40 min.
+
+    An env var cannot carry this: the batch would authenticate once and then
+    start 401ing hours later. Reading the file per call costs nothing (a few
+    hundred bytes) and keeps a long unattended run alive. Falls back to the
+    env var when the auth store is absent, so a real API key still works.
+    """
+    import time as _t
+    store = os.environ.get("MINIMAX_AUTH_STORE") or str(
+        Path.home() / ".minimax" / "auth" / "prod" / "cn" / "mcode-public" / "auth.json")
+    try:
+        rec = next(iter(json.loads(Path(store).read_text(
+            encoding="utf-8"))["records"].values()))
+        exp = int(rec.get("expiresAtMs", 0))
+        if exp - int(_t.time() * 1000) > 60_000:      # >60s of life left
+            return rec["accessToken"]
+    except Exception:
+        pass
+    # Stale/absent store: fall back to whatever was injected at spawn time.
+    return os.environ.get("MINIMAX_API_KEY", "")
+
+
+def _cloud_auth_header() -> str:
+    key = _minimax_live_token() if os.environ.get("V2K_CLOUD_PROTOCOL", "").lower() == "anthropic" else _CLOUD["api_key"]
+    return f"Bearer {key}"
+
+
 def _cloud_chat(model: str, content, max_tokens: int, temperature: float):
-    """One /chat/completions call. `content` is either a string or an
-    OpenAI vision content array. Returns message.content or raises."""
+    """One cloud call. `content` is either a string or a vision content array
+    (OpenAI shape). Returns text or raises.
+
+    V2K_CLOUD_PROTOCOL=anthropic routes through POST {base}/messages instead
+    of /chat/completions, translating both the request and the vision content
+    blocks. Needed because MiniMax's agent endpoint serves the anthropic
+    protocol only — its /chat/completions answers 50115 direct_route_not_
+    configured, while /messages returns 200.
+    """
     import urllib.error
     import urllib.request
-    payload = {"model": model, "stream": False, "temperature": temperature,
-               "max_tokens": max_tokens,
-               "messages": [{"role": "user", "content": content}]}
     base = _CLOUD["api_base"].rstrip("/")
+    anthropic_mode = os.environ.get("V2K_CLOUD_PROTOCOL", "").lower() == "anthropic"
+    if anthropic_mode:
+        payload = _to_anthropic_payload(model, content, max_tokens, temperature)
+        url = f"{base}/messages"
+    else:
+        payload = {"model": model, "stream": False, "temperature": temperature,
+                   "max_tokens": max_tokens,
+                   "messages": [{"role": "user", "content": content}]}
+        url = f"{base}/chat/completions"
+    # urllib honours HTTP_PROXY/HTTPS_PROXY from the environment. When that
+    # points at a local port nobody is listening on (3067 here), every cloud
+    # call dies with WinError 10061 before leaving the machine — which looks
+    # exactly like an upstream outage. Clearing the vars around the call keeps
+    # the module-level urlopen (and therefore the test monkeypatch contract).
+    saved = {k: os.environ.pop(k) for k in
+             ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+             if k in os.environ}
     req = urllib.request.Request(
-        f"{base}/chat/completions", data=json.dumps(payload).encode(),
+        url, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {_CLOUD['api_key']}"})
+                 "Authorization": _cloud_auth_header(),
+                 "anthropic-version": "2023-06-01"})
     last = None
     for attempt in range(2):
         try:
             with urllib.request.urlopen(req, timeout=240) as r:
                 resp = json.loads(r.read().decode())
-            msg = resp.get("choices", [{}])[0].get("message", {})
-            text = re.sub(r"<think>.*?</think>", "", msg.get("content") or "",
-                          flags=re.DOTALL).strip()
+            if anthropic_mode:
+                text = "".join(b.get("text", "") for b in (resp.get("content") or [])
+                               if b.get("type") == "text").strip()
+            else:
+                msg = resp.get("choices", [{}])[0].get("message", {})
+                text = re.sub(r"<think>.*?</think>", "", msg.get("content") or "",
+                              flags=re.DOTALL).strip()
             if not text:
                 raise ValueError("empty content in cloud response")
             return text
@@ -164,7 +218,39 @@ def _cloud_chat(model: str, content, max_tokens: int, temperature: float):
                 time.sleep(5)
                 continue
             raise
+        finally:
+            os.environ.update(saved)
     raise RuntimeError(f"cloud VLM request failed — {last}")
+
+
+def _to_anthropic_payload(model: str, content, max_tokens: int, temperature: float):
+    """OpenAI-shaped request -> anthropic /messages shape.
+
+    image_url {url: "data:image/jpeg;base64,..."} becomes
+    image {source: {type: base64, media_type: image/jpeg, data: ...}} so the
+    same describe_frame_cloud() caller works on both protocols.
+    """
+    if isinstance(content, str):
+        blocks = [{"type": "text", "text": content}]
+    else:
+        blocks = []
+        for part in content:
+            if part.get("type") == "image_url":
+                url = part["image_url"]["url"]
+                media, _, b64 = url.partition("base64,")
+                media_type = media.split("data:")[-1].split(";")[0] or "image/jpeg"
+                blocks.append({"type": "image",
+                               "source": {"type": "base64",
+                                          "media_type": media_type, "data": b64}})
+            else:
+                blocks.append({"type": "text", "text": part.get("text", "")})
+    out = {"model": model, "max_tokens": max_tokens,
+           "messages": [{"role": "user", "content": blocks}]}
+    # MiniMax rejects temperature 0.0 with 201 only when reasoning is on; keep
+    # the caller-supplied value and let the endpoint decide, matching the
+    # OpenAI path which never dropped it either.
+    out["temperature"] = temperature
+    return out
 
 
 def describe_frame_cloud(model: str, jpg: Path) -> str:
