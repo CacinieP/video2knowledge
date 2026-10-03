@@ -65,6 +65,10 @@ from typing import Callable
 HERE = Path(__file__).resolve().parent
 HP = HERE / "hardware_profile.py"
 
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+from net import pop_dead_proxy  # noqa: E402
+
 
 def _hp(key: str, fallback: str) -> str:
     """Read a default from hardware_profile.py; fall back if detection fails."""
@@ -353,8 +357,15 @@ def _mimo_transcribe_chunk(api_base: str, model: str, api_key: str,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {api_key}"})
         try:
-            with urllib.request.urlopen(req, timeout=300) as r:
-                resp = json.loads(r.read().decode())
+            # Module-level urlopen on purpose: the cloud-ASR tests monkeypatch
+            # it, and swapping in an opener silently bypasses every stub. The
+            # dead-proxy guard only has to pop the env vars around the call.
+            saved = pop_dead_proxy()
+            try:
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    resp = json.loads(r.read().decode())
+            finally:
+                os.environ.update(saved)
             msg = (resp.get("choices") or [{}])[0].get("message", {}) or {}
             return (msg.get("content") or "").strip()
         except urllib.error.HTTPError as e:

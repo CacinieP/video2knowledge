@@ -39,6 +39,12 @@ except ImportError:  # imported as a stray module without scripts/ on sys.path
     def default_text_model() -> str:
         return os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm5-2b")
 
+try:
+    from net import cloud_auth_header, pop_dead_proxy
+except ImportError:  # kept importable as a stray module
+    pop_dead_proxy = lambda: {}
+    cloud_auth_header = lambda anthropic, key: f"Bearer {key}"
+
 # --- subtitle loading --------------------------------------------------------
 
 def load_subtitles(path: Path) -> tuple[list[dict], str]:
@@ -291,18 +297,14 @@ def ask_llm_cloud(prompt: str) -> str | None:
                    "messages": [{"role": "user", "content": prompt}]}
         url = f"{base}/chat/completions"
     data = json.dumps(payload).encode()
-    if anthropic_mode:
-        from build_notes import _cloud_auth_header
-        auth = _cloud_auth_header()
-    else:
-        auth = f"Bearer {key}"
-    # Clearing HTTP_PROXY/HTTPS_PROXY around the call: a stale local proxy
-    # port (3067) makes every cloud call die with WinError 10061, which reads
-    # like an upstream outage but never leaves the machine. Module-level
-    # urlopen is kept so the tests' monkeypatch contract still holds.
-    saved = {k: os.environ.pop(k) for k in
-             ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
-             if k in os.environ}
+    # net.cloud_auth_header, not build_notes._cloud_auth_header: build_notes
+    # imports THIS module, so reaching back into it was a circular import.
+    auth = cloud_auth_header(anthropic_mode, key or "")
+    # A stale local proxy port makes every cloud call die with WinError 10061,
+    # which reads like an upstream outage but never leaves the machine. Probe
+    # first and only bypass a proxy that is really dead; the module-level
+    # urlopen stays so the tests' monkeypatch contract holds.
+    saved = pop_dead_proxy()
     req = urllib.request.Request(
         url, data=data,
         headers={"Content-Type": "application/json",

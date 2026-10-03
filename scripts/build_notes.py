@@ -47,6 +47,7 @@ from build_knowledge import (ask_llm, configure_cloud, fmt_mmss,  # noqa: E402
                              has_usable_speech, load_subtitles, ping, _CLOUD)
 from extract_frames import cap_by_time  # noqa: E402
 from hardware_profile import default_text_model  # noqa: E402
+from net import cloud_auth_header, pop_dead_proxy  # noqa: E402
 
 DESC_PROMPT = (
     "请用中文描述这一帧中**可用于学习的教学信息**（不超过40字），按优先级：\n"
@@ -132,32 +133,11 @@ _TINY_PNG_B64 = (
 )
 
 
-def _minimax_live_token() -> str:
-    """Read the desktop OAuth access token, which rotates every ~40 min.
-
-    An env var cannot carry this: the batch would authenticate once and then
-    start 401ing hours later. Reading the file per call costs nothing (a few
-    hundred bytes) and keeps a long unattended run alive. Falls back to the
-    env var when the auth store is absent, so a real API key still works.
-    """
-    import time as _t
-    store = os.environ.get("MINIMAX_AUTH_STORE") or str(
-        Path.home() / ".minimax" / "auth" / "prod" / "cn" / "mcode-public" / "auth.json")
-    try:
-        rec = next(iter(json.loads(Path(store).read_text(
-            encoding="utf-8"))["records"].values()))
-        exp = int(rec.get("expiresAtMs", 0))
-        if exp - int(_t.time() * 1000) > 60_000:      # >60s of life left
-            return rec["accessToken"]
-    except Exception:
-        pass
-    # Stale/absent store: fall back to whatever was injected at spawn time.
-    return os.environ.get("MINIMAX_API_KEY", "")
-
-
 def _cloud_auth_header() -> str:
-    key = _minimax_live_token() if os.environ.get("V2K_CLOUD_PROTOCOL", "").lower() == "anthropic" else _CLOUD["api_key"]
-    return f"Bearer {key}"
+    """Delegates to net.cloud_auth_header so build_knowledge.py can share it
+    without importing this module (that import had become circular)."""
+    anthropic_mode = os.environ.get("V2K_CLOUD_PROTOCOL", "").lower() == "anthropic"
+    return cloud_auth_header(anthropic_mode, _CLOUD["api_key"] or "")
 
 
 def _cloud_chat(model: str, content, max_tokens: int, temperature: float):
@@ -183,13 +163,13 @@ def _cloud_chat(model: str, content, max_tokens: int, temperature: float):
                    "messages": [{"role": "user", "content": content}]}
         url = f"{base}/chat/completions"
     # urllib honours HTTP_PROXY/HTTPS_PROXY from the environment. When that
-    # points at a local port nobody is listening on (3067 here), every cloud
-    # call dies with WinError 10061 before leaving the machine — which looks
-    # exactly like an upstream outage. Clearing the vars around the call keeps
-    # the module-level urlopen (and therefore the test monkeypatch contract).
-    saved = {k: os.environ.pop(k) for k in
-             ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
-             if k in os.environ}
+    # points at a local port nobody is listening on, every cloud call dies
+    # with WinError 10061 before leaving the machine -- which looks exactly
+    # like an upstream outage. net.dead_proxy_in_env() probes the port and
+    # only bypasses a proxy that is really dead. The module-level urlopen is
+    # kept on purpose: the cloud tests monkeypatch it, and swapping in an
+    # opener took 12 tests red.
+    saved = pop_dead_proxy()
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json",
