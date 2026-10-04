@@ -39,6 +39,12 @@ except ImportError:  # imported as a stray module without scripts/ on sys.path
     def default_text_model() -> str:
         return os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm5-2b")
 
+try:
+    from net import cloud_auth_header, pop_dead_proxy
+except ImportError:  # kept importable as a stray module
+    pop_dead_proxy = lambda: {}
+    cloud_auth_header = lambda anthropic, key: f"Bearer {key}"
+
 # --- subtitle loading --------------------------------------------------------
 
 def load_subtitles(path: Path) -> tuple[list[dict], str]:
@@ -274,29 +280,58 @@ def ask_llm_cloud(prompt: str) -> str | None:
     base, model, key = _CLOUD["api_base"], _CLOUD["api_model"], _CLOUD["api_key"]
     if not (base and model and key):
         return None
-    payload = {"model": model, "stream": False, "temperature": 0.3,
-               "max_tokens": int(os.environ.get("V2K_NUM_PREDICT", "2048")),
-               "messages": [{"role": "user", "content": prompt}]}
+    # V2K_CLOUD_PROTOCOL=anthropic targets providers that only serve the
+    # anthropic protocol (MiniMax's agent endpoint answers 50115
+    # direct_route_not_configured on /chat/completions but 200 on /messages).
+    # Off by default, so every existing OpenAI-shaped provider is unchanged.
+    anthropic_mode = os.environ.get("V2K_CLOUD_PROTOCOL", "").lower() == "anthropic"
+    max_tokens = int(os.environ.get("V2K_NUM_PREDICT", "2048"))
+    if anthropic_mode:
+        payload = {"model": model, "temperature": 0.3, "max_tokens": max_tokens,
+                   "messages": [{"role": "user",
+                                 "content": [{"type": "text", "text": prompt}]}]}
+        url = f"{base}/messages"
+    else:
+        payload = {"model": model, "stream": False, "temperature": 0.3,
+                   "max_tokens": max_tokens,
+                   "messages": [{"role": "user", "content": prompt}]}
+        url = f"{base}/chat/completions"
     data = json.dumps(payload).encode()
+    # net.cloud_auth_header, not build_notes._cloud_auth_header: build_notes
+    # imports THIS module, so reaching back into it was a circular import.
+    auth = cloud_auth_header(anthropic_mode, key or "")
+    # A stale local proxy port makes every cloud call die with WinError 10061,
+    # which reads like an upstream outage but never leaves the machine. Probe
+    # first and only bypass a proxy that is really dead; the module-level
+    # urlopen stays so the tests' monkeypatch contract holds.
+    saved = pop_dead_proxy()
     req = urllib.request.Request(
-        f"{base}/chat/completions", data=data,
+        url, data=data,
         headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {key}"})
+                 "Authorization": auth,
+                 "anthropic-version": "2023-06-01"})
     for attempt in range(2):
         try:
             with urllib.request.urlopen(req, timeout=1800) as r:
                 resp = json.loads(r.read().decode())
-            msg = resp.get("choices", [{}])[0].get("message", {})
-            text = _strip_think(msg.get("content") or "")
-            if not text:
-                # A 200 with no usable content is a failure, not an empty
-                # answer: returning "" would let the caller write a
-                # placeholder-filled document and call it done. This happens
-                # when a gateway answers a different schema than expected.
-                raise ValueError("no content in choices[0].message")
+            if anthropic_mode:
+                text = "".join(b.get("text", "") for b in (resp.get("content") or [])
+                               if b.get("type") == "text").strip()
+                if not text:
+                    raise ValueError("no content blocks in anthropic response")
+            else:
+                msg = resp.get("choices", [{}])[0].get("message", {})
+                text = _strip_think(msg.get("content") or "")
+                if not text:
+                    # A 200 with no usable content is a failure, not an empty
+                    # answer: returning "" would let the caller write a
+                    # placeholder-filled document and call it done. This happens
+                    # when a gateway answers a different schema than expected.
+                    raise ValueError("no content in choices[0].message")
             return text
         except (urllib.error.HTTPError, urllib.error.URLError,
-                OSError, ValueError, KeyError, IndexError) as e:
+                OSError, ValueError, KeyError, IndexError,
+                ImportError) as e:
             # 429 and 5xx are worth one retry; a 401 or 400 will fail again
             # identically, so retrying it just doubles the wait.
             code = getattr(e, "code", 0) if isinstance(e, urllib.error.HTTPError) else 0
@@ -310,6 +345,8 @@ def ask_llm_cloud(prompt: str) -> str | None:
             print(f"[llm] cloud generate failed: {type(e).__name__}: {e}",
                   file=sys.stderr)
             return None
+        finally:
+            os.environ.update(saved)
     return None
 
 

@@ -39,13 +39,15 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_knowledge import (ask_llm, fmt_mmss, has_usable_speech,  # noqa: E402
-                             load_subtitles, ping)
+from build_knowledge import (ask_llm, configure_cloud, fmt_mmss,  # noqa: E402
+                             has_usable_speech, load_subtitles, ping, _CLOUD)
 from extract_frames import cap_by_time  # noqa: E402
 from hardware_profile import default_text_model  # noqa: E402
+from net import cloud_auth_header, pop_dead_proxy  # noqa: E402
 
 DESC_PROMPT = (
     "请用中文描述这一帧中**可用于学习的教学信息**（不超过40字），按优先级：\n"
@@ -104,6 +106,8 @@ def supports_vision(host: str, model: str) -> bool:
 
 def describe_frame(host: str, model: str, jpg: Path) -> str:
     """One-line VLM description of a key frame (used for the 画面 line)."""
+    if _CLOUD["api_base"]:
+        return describe_frame_cloud(model, jpg)
     b64 = base64.b64encode(jpg.read_bytes()).decode()
     r = http_generate(host, {"model": model, "prompt": DESC_PROMPT, "images": [b64],
                              "stream": False, "think": False,
@@ -112,6 +116,149 @@ def describe_frame(host: str, model: str, jpg: Path) -> str:
     if "</think>" in text:  # some models leak the reasoning chain
         text = text.rsplit("</think>", 1)[1].strip()
     return text.replace("\n", " ")
+
+
+# --- cloud VLM (OpenAI-compatible, same endpoint as the text LLM) ------------
+#
+# When --api-base is set the text side already routes through build_knowledge's
+# configure_cloud()/ask_llm(). The 画面 descriptions were still hitting the
+# Ollama /api/generate shape (base64 "images" array), which no /chat/completions
+# provider understands — so a cloud run rendered every node without its frame
+# description unless a local Ollama happened to be running. Same probe-once
+# discipline as supports_vision(): never find out per-frame in a retry loop.
+
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAE"
+    "hQGAhKmMIQAAAABJRU5ErkJggg=="  # 1x1 px — exists purely to be accepted
+)
+
+
+def _cloud_auth_header() -> str:
+    """Delegates to net.cloud_auth_header so build_knowledge.py can share it
+    without importing this module (that import had become circular)."""
+    anthropic_mode = os.environ.get("V2K_CLOUD_PROTOCOL", "").lower() == "anthropic"
+    return cloud_auth_header(anthropic_mode, _CLOUD["api_key"] or "")
+
+
+def _cloud_chat(model: str, content, max_tokens: int, temperature: float):
+    """One cloud call. `content` is either a string or a vision content array
+    (OpenAI shape). Returns text or raises.
+
+    V2K_CLOUD_PROTOCOL=anthropic routes through POST {base}/messages instead
+    of /chat/completions, translating both the request and the vision content
+    blocks. Needed because MiniMax's agent endpoint serves the anthropic
+    protocol only — its /chat/completions answers 50115 direct_route_not_
+    configured, while /messages returns 200.
+    """
+    import urllib.error
+    import urllib.request
+    base = _CLOUD["api_base"].rstrip("/")
+    anthropic_mode = os.environ.get("V2K_CLOUD_PROTOCOL", "").lower() == "anthropic"
+    if anthropic_mode:
+        payload = _to_anthropic_payload(model, content, max_tokens, temperature)
+        url = f"{base}/messages"
+    else:
+        payload = {"model": model, "stream": False, "temperature": temperature,
+                   "max_tokens": max_tokens,
+                   "messages": [{"role": "user", "content": content}]}
+        url = f"{base}/chat/completions"
+    # urllib honours HTTP_PROXY/HTTPS_PROXY from the environment. When that
+    # points at a local port nobody is listening on, every cloud call dies
+    # with WinError 10061 before leaving the machine -- which looks exactly
+    # like an upstream outage. net.dead_proxy_in_env() probes the port and
+    # only bypasses a proxy that is really dead. The module-level urlopen is
+    # kept on purpose: the cloud tests monkeypatch it, and swapping in an
+    # opener took 12 tests red.
+    saved = pop_dead_proxy()
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json",
+                 "Authorization": _cloud_auth_header(),
+                 "anthropic-version": "2023-06-01"})
+    last = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=240) as r:
+                resp = json.loads(r.read().decode())
+            if anthropic_mode:
+                text = "".join(b.get("text", "") for b in (resp.get("content") or [])
+                               if b.get("type") == "text").strip()
+            else:
+                msg = resp.get("choices", [{}])[0].get("message", {})
+                text = re.sub(r"<think>.*?</think>", "", msg.get("content") or "",
+                              flags=re.DOTALL).strip()
+            if not text:
+                raise ValueError("empty content in cloud response")
+            return text
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError,
+                ValueError) as e:
+            last = e
+            code = getattr(e, "code", 0) if isinstance(e, urllib.error.HTTPError) else 0
+            if attempt == 0 and (code in (408, 429) or code >= 500):
+                time.sleep(5)
+                continue
+            raise
+        finally:
+            os.environ.update(saved)
+    raise RuntimeError(f"cloud VLM request failed — {last}")
+
+
+def _to_anthropic_payload(model: str, content, max_tokens: int, temperature: float):
+    """OpenAI-shaped request -> anthropic /messages shape.
+
+    image_url {url: "data:image/jpeg;base64,..."} becomes
+    image {source: {type: base64, media_type: image/jpeg, data: ...}} so the
+    same describe_frame_cloud() caller works on both protocols.
+    """
+    if isinstance(content, str):
+        blocks = [{"type": "text", "text": content}]
+    else:
+        blocks = []
+        for part in content:
+            if part.get("type") == "image_url":
+                url = part["image_url"]["url"]
+                media, _, b64 = url.partition("base64,")
+                media_type = media.split("data:")[-1].split(";")[0] or "image/jpeg"
+                blocks.append({"type": "image",
+                               "source": {"type": "base64",
+                                          "media_type": media_type, "data": b64}})
+            else:
+                blocks.append({"type": "text", "text": part.get("text", "")})
+    out = {"model": model, "max_tokens": max_tokens,
+           "messages": [{"role": "user", "content": blocks}]}
+    # MiniMax rejects temperature 0.0 with 201 only when reasoning is on; keep
+    # the caller-supplied value and let the endpoint decide, matching the
+    # OpenAI path which never dropped it either.
+    out["temperature"] = temperature
+    return out
+
+
+def describe_frame_cloud(model: str, jpg: Path) -> str:
+    b64 = base64.b64encode(jpg.read_bytes()).decode()
+    content = [{"type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+               {"type": "text", "text": DESC_PROMPT}]
+    text = _cloud_chat(model, content, max_tokens=1024, temperature=0.2)
+    return text.replace("\n", " ")
+
+
+def supports_vision_cloud(model: str) -> bool:
+    """Probe the cloud model with a 1x1 image once per run.
+
+    The reasoning models common on /chat/completions endpoints burn budget on
+    thinking before answering; 512 tokens covers the probe with room to spare
+    (measured: glm-5.3-flash used ~150 reasoning tokens for this yes/no).
+    """
+    try:
+        content = [{"type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{_TINY_PNG_B64}"}},
+                   {"type": "text", "text": "图里是什么颜色？只答两个字。"}]
+        _cloud_chat(model, content, max_tokens=512, temperature=0.0)
+        return True
+    except Exception as e:
+        print(f"[notes] cloud VLM probe failed for '{model}': "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+        return False
 
 
 def _strip_line_label(line: str) -> str:
@@ -177,6 +324,35 @@ NODE_MAX = 60
 def auto_node_budget(duration_s: float) -> int:
     """How many illustrated nodes a video of `duration_s` should get."""
     return max(NODE_MIN, min(NODE_MAX, round(duration_s / NODE_SECONDS)))
+
+
+def collapse_trailing_visual_nodes(sections: list[dict]) -> list[dict]:
+    """Collapse a trailing run of narration-less nodes to just the last one.
+
+    A lecture's final board shot yields several perception-distinct frames
+    seconds apart — the board is still being written, or a hand crosses it —
+    all after the last spoken word. Each becomes a section with an empty
+    narration window, no note, and a near-identical 画面 description, so the
+    note ends with 2-4 nodes repeating the same final board (measured: 07:12,
+    07:13 and 07:14 all reading "伯努利方程求解，令z=y⁻¹…"). The last of the
+    run is the fully-settled board — keep that one alone.
+
+    No-op for wordless videos: there every node is intentionally visual-only
+    (see build_sections), and their descriptions are genuinely different
+    frames of the performance, not re-reads of one static board.
+    """
+    if not sections or not sections[0].get("speech", True):
+        return sections
+    i = len(sections)
+    while i > 0 and not sections[i - 1].get("excerpt") \
+            and not sections[i - 1].get("note"):
+        i -= 1
+    dropped = len(sections) - i - 1
+    if dropped <= 0:
+        return sections
+    print(f"[notes] collapsed {dropped} trailing visual-only node(s) into the "
+          f"final settled frame", file=sys.stderr)
+    return sections[:i] + [sections[-1]]
 
 
 def resolve_frame_file(frames_json: Path, file_ref: str) -> Path:
@@ -261,6 +437,24 @@ def build_sections(host: str, model: str | None, vlm_model: str | None,
 
 
 # --- rendering ----------------------------------------------------------------
+
+# Unicode superscripts the VLM emits inside formulas (y⁻¹, Cx⁻⁶, yⁿ …).
+# Microsoft YaHei — the CJK font fpdf2 auto-detects and subsets — lacks ⁻ and
+# the non-BMP-safe superscript digits, and fpdf2 silently drops glyphs the
+# subset lacks, so an exponent disappears from the PDF while looking fine in
+# md/html/docx (those renderers fall back to a font that has them).
+_SUPERMAP = {"\u207B": "-", "\u2070": "0", "\u00B9": "1", "\u00B2": "2",
+             "\u00B3": "3", "\u2074": "4", "\u2075": "5", "\u2076": "6",
+             "\u2077": "7", "\u2078": "8", "\u2079": "9", "\u207F": "n"}
+_SUPER_RE = re.compile("[" + "".join(re.escape(c) for c in _SUPERMAP) + "]+")
+
+
+def pdf_safe_text(text: str) -> str:
+    """Map unicode superscript runs to caret form for the PDF export only."""
+    def repl(m: re.Match) -> str:
+        body = "".join(_SUPERMAP[ch] for ch in m.group(0))
+        return f"^{body}" if len(body) == 1 and body != "-" else f"^({body})"
+    return _SUPER_RE.sub(repl, text)
 
 def render_markdown(sections: list[dict], meta: dict, out_dir: Path,
                      verbatim: bool = True) -> str:
@@ -378,6 +572,22 @@ def main() -> int:
     ap.add_argument("--vlm-model", default=None,
                     help="VLM for frame descriptions (default: same as --model; "
                          "a vision-capable model is required)")
+    ap.add_argument("--api-base", default=os.environ.get("V2K_LLM_API_BASE", ""),
+                    help="use an OpenAI-compatible /chat/completions endpoint "
+                         "instead of local Ollama for BOTH the section titles/notes "
+                         "and the 画面 VLM descriptions (default: unset = local "
+                         "Ollama). Vendor-neutral: any compatible URL works.")
+    ap.add_argument("--api-model", default=os.environ.get("V2K_LLM_API_MODEL", ""),
+                    help="model name at --api-base (required with it)")
+    ap.add_argument("--vlm-api-model",
+                    default=os.environ.get("V2K_VLM_API_MODEL", ""),
+                    help="vision model at --api-base for 画面 descriptions "
+                         "(default: same as --api-model — correct when that model "
+                         "is multimodal, e.g. glm-5.3-flash)")
+    ap.add_argument("--api-key-env", default=os.environ.get("V2K_LLM_API_KEY_ENV",
+                                                            "OPENAI_API_KEY"),
+                    help="env var holding the API key (default OPENAI_API_KEY). "
+                         "The key is never read from argv.")
     ap.add_argument("--title", default=None, help="note title (default: video basename)")
     ap.add_argument("--lang", choices=["zh", "en"], default="zh",
                     help="prompt/output language (default zh)")
@@ -444,26 +654,46 @@ def main() -> int:
               f"changes less often than {NODE_SECONDS}s, so nodes follow the "
               f"actual visual changes instead of a clock.", file=sys.stderr)
 
-    model = args.model if ping(args.host) else None
+    if args.api_base and not args.api_model:
+        print("[err] --api-base also needs --api-model (or $V2K_LLM_API_MODEL)",
+              file=sys.stderr)
+        return 2
+    if args.api_base:
+        # mirrors build_knowledge.py: ask_llm() routes to the cloud endpoint
+        # and ping() turns true, so every existing gate keeps working
+        configure_cloud(args.api_base, args.api_model, args.api_key_env)
+
+    cloud = bool(_CLOUD["api_base"])
+    model = (args.api_model or args.model) if (cloud or ping(args.host)) else None
     vlm_model = None
     if args.describe_frames:
-        vlm_model = args.vlm_model or args.model
-        if vlm_model and not supports_vision(args.host, vlm_model):
-            print(f"[notes] {vlm_model} is text-only — skipping 画面 descriptions "
-                  f"instead of failing once per key frame. Pass --vlm-model "
-                  f"<multimodal>, e.g. openbmb/minicpm-v4.6:latest, to enable them.",
-                  file=sys.stderr)
-            vlm_model = None
-        if not ping(args.host):
-            vlm_model = None
+        if cloud:
+            vlm_model = args.vlm_api_model or args.api_model
+            if vlm_model and not supports_vision_cloud(vlm_model):
+                print(f"[notes] {vlm_model} failed the cloud vision probe — "
+                      f"skipping 画面 descriptions instead of failing once per "
+                      f"key frame. Pass --vlm-api-model <multimodal> to enable "
+                      f"them.", file=sys.stderr)
+                vlm_model = None
+        else:
+            vlm_model = args.vlm_model or args.model
+            if vlm_model and not supports_vision(args.host, vlm_model):
+                print(f"[notes] {vlm_model} is text-only — skipping 画面 descriptions "
+                      f"instead of failing once per key frame. Pass --vlm-model "
+                      f"<multimodal>, e.g. openbmb/minicpm-v4.6:latest, to enable them.",
+                      file=sys.stderr)
+                vlm_model = None
+            if not ping(args.host):
+                vlm_model = None
     if not model:
-        print("[notes] Ollama unreachable — degrading to raw excerpts "
+        print("[notes] no LLM reachable — degrading to raw excerpts "
               "(titles/notes marked accordingly)", file=sys.stderr)
 
     print(f"[notes] {len(frames)} key frames x {len(segs)} segments; "
           f"text={model or 'off'} vlm={vlm_model or 'off'}", file=sys.stderr)
     sections = build_sections(args.host, model, vlm_model, frames, segs,
                               describe=vlm_model is not None, lang=args.lang)
+    sections = collapse_trailing_visual_nodes(sections)
 
     duration = segs[-1]["end"] if segs else 0.0
     meta = {"title": args.title
@@ -497,10 +727,13 @@ def main() -> int:
                                base_dir=args.out_dir)
                 print(f"[ok] distilled note (docx) -> {p}")
             if args.pdf:
-                p = md_to_pdf(md, args.out_dir / "notes.pdf",
+                # fpdf2's CJK font subset drops the superscript glyphs the VLM
+                # loves (⁻ⁿ⁶ …): map them to caret form for PDF only — md/html/
+                # docx renderers fall back to a font that has them
+                p = md_to_pdf(pdf_safe_text(md), args.out_dir / "notes.pdf",
                               base_dir=args.out_dir, title=str(meta["title"]))
                 print(f"[ok] illustrated note (pdf) -> {p}")
-                p = md_to_pdf(md_light, args.out_dir / "notes-distilled.pdf",
+                p = md_to_pdf(pdf_safe_text(md_light), args.out_dir / "notes-distilled.pdf",
                               base_dir=args.out_dir, title=str(meta["title"]))
                 print(f"[ok] distilled note (pdf) -> {p}")
         except RuntimeError as e:

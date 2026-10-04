@@ -51,6 +51,7 @@ import argparse
 import base64
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -63,6 +64,10 @@ from typing import Callable
 
 HERE = Path(__file__).resolve().parent
 HP = HERE / "hardware_profile.py"
+
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+from net import pop_dead_proxy  # noqa: E402
 
 
 def _hp(key: str, fallback: str) -> str:
@@ -338,29 +343,39 @@ def _extract_span(wav: Path, start: float, dur: float, dest: Path) -> None:
 
 
 def _mimo_transcribe_chunk(api_base: str, model: str, api_key: str,
-                           path: Path, tries: int = 3) -> str:
+                           path: Path, tries: int = 6) -> str:
     data = base64.b64encode(path.read_bytes()).decode()
     payload = {"model": model, "stream": False,
                "messages": [{"role": "user", "content": [
                    {"type": "input_audio",
                     "input_audio": {"data": f"data:audio/wav;base64,{data}",
                                     "format": "wav"}}]}]}
-    req = urllib.request.Request(
-        f"{api_base}/chat/completions", data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {api_key}"})
     last = ""
     for attempt in range(tries):
+        req = urllib.request.Request(
+            f"{api_base}/chat/completions", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {api_key}"})
         try:
-            with urllib.request.urlopen(req, timeout=300) as r:
-                resp = json.loads(r.read().decode())
+            # Module-level urlopen on purpose: the cloud-ASR tests monkeypatch
+            # it, and swapping in an opener silently bypasses every stub. The
+            # dead-proxy guard only has to pop the env vars around the call.
+            saved = pop_dead_proxy()
+            try:
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    resp = json.loads(r.read().decode())
+            finally:
+                os.environ.update(saved)
             msg = (resp.get("choices") or [{}])[0].get("message", {}) or {}
             return (msg.get("content") or "").strip()
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")[:200]
             last = f"HTTP {e.code}: {body}"
             if e.code in (429, 500, 502, 503, 504) and attempt < tries - 1:
-                time.sleep(5 * (attempt + 1))   # gateway throttling / transient 5xx
+                # gateway throttling / server flakiness: measured 500-storms
+                # lasting >15s killed every ~100-min lecture at the old
+                # 3-tries/5-10s backoff — 6 tries x exp backoff rides them out
+                time.sleep(min(60, 5 * (2 ** attempt)) + random.uniform(0, 3))
                 continue
             break
         except (urllib.error.URLError, TimeoutError, OSError) as e:
@@ -368,7 +383,7 @@ def _mimo_transcribe_chunk(api_base: str, model: str, api_key: str,
             # swallowed: after the last try it becomes a visible failure.
             last = f"{type(e).__name__}: {e}"
             if attempt < tries - 1:
-                time.sleep(5)
+                time.sleep(min(60, 5 * (2 ** attempt)) + random.uniform(0, 3))
                 continue
             break
     raise RuntimeError(f"mimo-asr request failed — {last}")
@@ -407,14 +422,40 @@ def _run_mimo_asr(args, wav: Path):
     tmp = wav.parent / f"_mimo_chunks_{wav.stem}"
     tmp.mkdir(exist_ok=True)
     try:
+        # chunk-text cache: a ~2.5h lecture is 300+ chunks and ~20 min of work;
+        # the old code threw all of it away when one chunk exhausted its
+        # retries. Completed chunk texts survive in t_*.txt, so a rerun pays
+        # only for the chunks that actually failed. spans.json guards against
+        # reusing texts cut on different boundaries (changed --chunk-seconds).
+        spans_file = tmp / "spans.json"
+        if spans_file.is_file():
+            try:
+                old = json.loads(spans_file.read_text(encoding="utf-8"))
+                # full comparison, not just the count: same chunk count on
+                # different boundaries would splice stale texts at wrong times
+                if [[float(a), float(b)] for a, b in old] != \
+                        [[float(a), float(b)] for a, b in spans]:
+                    for t in tmp.glob("t_*.txt"):
+                        t.unlink()
+            except Exception:
+                pass
+        spans_file.write_text(json.dumps([list(s) for s in spans]),
+                              encoding="utf-8")
+
         def one(idx: int):
             start, end = spans[idx]
+            cache = tmp / f"t_{idx:04d}.txt"
+            if cache.is_file():
+                text = cache.read_text(encoding="utf-8").strip()
+                if text:
+                    return idx, text
             cpath = tmp / f"chunk_{idx:04d}.wav"
             _extract_span(wav, start, end - start, cpath)
             try:
                 text = _mimo_transcribe_chunk(api_base, model, api_key, cpath)
             finally:
                 cpath.unlink(missing_ok=True)
+            cache.write_text(text, encoding="utf-8")
             return idx, re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
         segs = []
@@ -428,6 +469,7 @@ def _run_mimo_asr(args, wav: Path):
                 done += 1
                 if done % 25 == 0:
                     print(f"[asr][mimo-asr] {done}/{len(spans)} chunks", file=sys.stderr)
+        shutil.rmtree(tmp, ignore_errors=True)  # success: drop the chunk cache
     finally:
         try:
             tmp.rmdir()

@@ -434,7 +434,10 @@ def test_mimo_run_uses_chunk_bounds_as_timestamps(monkeypatch, tmp_path):
     assert not (tmp_path / f"_mimo_chunks_audio_16k").exists()
 
 
-def test_mimo_run_cleans_up_chunks_even_when_a_chunk_fails(monkeypatch, tmp_path):
+def test_mimo_run_keeps_chunk_text_cache_when_a_chunk_fails(monkeypatch, tmp_path):
+    """A 300-chunk lecture must not lose 300 chunks of paid work because chunk
+    299 hit a 500-storm. On failure the wav scratch is gone but the completed
+    chunk texts and the spans manifest stay behind for the rerun."""
     monkeypatch.setenv("MIMO_API_KEY", "k")
     monkeypatch.setattr(ac, "_chunk_bounds", lambda w, c: [(0.0, 5.0)])
     monkeypatch.setattr(ac, "_ffprobe_duration", lambda p: 5.0)
@@ -445,7 +448,65 @@ def test_mimo_run_cleans_up_chunks_even_when_a_chunk_fails(monkeypatch, tmp_path
     with pytest.raises(RuntimeError):
         ac._run_mimo_asr(_args(backend="mimo-asr", api_key_env="MIMO_API_KEY"),
                          _wav(tmp_path))
-    assert not (tmp_path / f"_mimo_chunks_audio_16k").exists()
+    d = tmp_path / "_mimo_chunks_audio_16k"
+    assert d.is_dir()                                   # cache survives...
+    assert not list(d.glob("chunk_*.wav"))              # ...scratch wavs do not
+    assert (d / "spans.json").is_file()
+
+
+def test_mimo_run_rerun_pays_only_for_failed_chunks(tmp_path, monkeypatch):
+    """The rerun after a mid-lecture failure must skip every chunk whose text
+    is already cached — otherwise 'resume' re-pays the whole transcript."""
+    monkeypatch.setenv("MIMO_API_KEY", "k")
+    spans = [(0.0, 30.0), (30.0, 60.0)]
+    monkeypatch.setattr(ac, "_chunk_bounds", lambda w, c: spans)
+    monkeypatch.setattr(ac, "_ffprobe_duration", lambda p: 60.0)
+    monkeypatch.setattr(ac, "_extract_span",
+                        lambda wav, s, d, dest: dest.write_bytes(b"RIFF"))
+    calls = {"n": 0}
+
+    def flaky(base, model, key, path):
+        calls["n"] += 1
+        if calls["n"] == 1:          # first pass: chunk 0 fails
+            raise RuntimeError("HTTP 500")
+        return "第二段" if "0001" in path.stem else "第一段"
+
+    monkeypatch.setattr(ac, "_mimo_transcribe_chunk", flaky)
+
+    with pytest.raises(RuntimeError):
+        ac._run_mimo_asr(_args(backend="mimo-asr", api_key_env="MIMO_API_KEY"),
+                         _wav(tmp_path))
+    first_pass = calls["n"]
+    assert first_pass == 2           # both chunks attempted (concurrent map)
+
+    segs, _ = ac._run_mimo_asr(
+        _args(backend="mimo-asr", api_key_env="MIMO_API_KEY"), _wav(tmp_path))
+    # chunk 0 was transcribed once (retry), chunk 1 served from cache
+    assert calls["n"] == 3
+    assert [s["text"] for s in segs] == ["第一段", "第二段"]
+    assert not (tmp_path / "_mimo_chunks_audio_16k").exists()
+
+
+def test_mimo_run_cache_is_discarded_when_chunking_changes(tmp_path, monkeypatch):
+    """Cached texts were cut on the OLD chunk boundaries; after --chunk-seconds
+    changes they would be spliced at wrong timestamps. The spans manifest
+    guards this: mismatched span count wipes the cache."""
+    monkeypatch.setenv("MIMO_API_KEY", "k")
+    d = tmp_path / "_mimo_chunks_audio_16k"
+    d.mkdir()
+    (d / "t_0000.txt").write_text("旧切分的陈旧文本", encoding="utf-8")
+    (d / "spans.json").write_text(json.dumps([[0.0, 90.0]]), encoding="utf-8")
+
+    monkeypatch.setattr(ac, "_chunk_bounds", lambda w, c: [(0.0, 30.0)])
+    monkeypatch.setattr(ac, "_ffprobe_duration", lambda p: 30.0)
+    monkeypatch.setattr(ac, "_extract_span",
+                        lambda wav, s, d_, dest: dest.write_bytes(b"RIFF"))
+    monkeypatch.setattr(ac, "_mimo_transcribe_chunk",
+                        lambda base, model, key, path: "新切分文本")
+
+    segs, _ = ac._run_mimo_asr(
+        _args(backend="mimo-asr", api_key_env="MIMO_API_KEY"), _wav(tmp_path))
+    assert [s["text"] for s in segs] == ["新切分文本"]   # stale text NOT used
 
 
 # --------------------------------------------------------------------------
