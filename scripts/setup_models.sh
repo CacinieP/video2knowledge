@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # setup_models.sh — idempotent check/download of models for video2knowledge
 #
-# Path 1 (multimodal): ollama pulls the profile-picked VLM (2026-08 lineup:
-#                      qwen3.5 0.8b/4b/9b, minicpm-v4.6 on low/mid, qwen3.8:27b on max)
+# Path 1 (multimodal): ollama pulls minicpm-v4.7 — the ONE local model
+#                      (native multimodal: vision + text, every tier, 1.6 GB).
+#                      Any OpenAI-compatible /chat/completions endpoint can
+#                      replace it at runtime (--api-base), no second pull.
 # Path 2 (ASR):        faster-whisper installed into a local venv; model weights
 #                      auto-download on first transcription to ~/.cache/huggingface
 #
@@ -94,7 +96,7 @@ if PROFILE_PY="$(profile_python)"; then
   : "${ASR_DEVICE:=$(hp device)}"
   HP_PROFILE="$(hp profile)"
 else
-  : "${VLM_MODEL:=openbmb/minicpm-v4.6:latest}"
+  : "${VLM_MODEL:=openbmb/minicpm-v4.7:latest}"
   : "${ASR_DEFAULT_MODEL:=small}"
   : "${ASR_COMPUTE_TYPE:=int8}"
   : "${ASR_DEVICE:=cpu}"
@@ -135,7 +137,7 @@ if ! ollama list >/dev/null 2>&1; then
   ollama list >/dev/null 2>&1 || { log "ERROR: ollama serve did not come up (see ${TMPDIR:-/tmp}/ollama.log)"; exit 1; }
 fi
 
-# ollama list prints names with tags (e.g. "openbmb/minicpm-v4.6:latest").
+# ollama list prints names with tags (e.g. "openbmb/minicpm-v4.7:latest").
 # Match on the base name to be tag-tolerant.
 VLM_BASE="${VLM_MODEL%%:*}"
 if ollama list 2>/dev/null | awk '{print $1}' | grep -qE "^${VLM_BASE}(:|@)"; then

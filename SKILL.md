@@ -60,8 +60,12 @@ an initial transcription when uncertain. Music/filler-only ASR is not narration.
 Do not run ASR for a known silent recording. On a narrated screen recording,
 prefer fusion when the screen carries needed information. Prefer installed
 models that work; use the profile's `vlm_model` and `text_model` as explicit
-arguments, since `mm_caption.py` itself defaults to MiniCPM-V 4.6 rather than
-reading the profile. Do not switch models solely to chase a new version.
+arguments, since `mm_caption.py` hardcodes its CLI default rather than reading
+the profile. That default is now `openbmb/minicpm-v4.7:latest` — the same native
+multimodal model every profile picks for vision AND text, so one pull covers
+captions/OCR and Step 2 synthesis — but a `VLM_MODEL=`/`V2K_TEXT_MODEL=`
+override does not reach the CLI default, so keep passing them explicitly.
+Do not switch models solely to chase a new version.
 
 ## 3. Execute the selected recipe
 
@@ -133,18 +137,21 @@ that these files are interchangeable. Do not delete markers or caches blindly.
 ## Cloud use and data boundaries
 
 Use cloud endpoints only when the user chooses them; check existing
-`V2K_LLM_API_BASE`, `V2K_LLM_API_MODEL`, `V2K_CLOUD_PROTOCOL`, `ASR_API_*` and
-`OLLAMA_HOST` settings before calling tools. An explicit CLI flag is not the only
+`V2K_LLM_API_BASE`, `V2K_LLM_API_MODEL`, `V2K_VLM_API_BASE`,
+`V2K_VLM_API_MODEL`, `V2K_CLOUD_PROTOCOL`, `ASR_API_*` and `OLLAMA_HOST`
+settings before calling tools. An explicit CLI flag is not the only
 way to enable uploads. A remote Ollama host also sends data off the machine.
 Describe the selected destination and data:
 
 - cloud ASR: extracted audio;
 - cloud knowledge/notes: subtitle or fused text (which may contain OCR content);
-- cloud VLM notes with `--describe-frames`: selected frame images AND text.
+- cloud VLM notes with `--describe-frames`: selected frame images AND text;
+- route-3 OCR via `mm_caption.py --api-base`: every selected frame image.
 
 Keep keys in configured environment variables/credential stores, never argv or
-run manifests. `mm_caption.py` uses the Ollama API; a cloud notes endpoint does
-not replace the route-3 OCR stage. Read [cloud.md](references/cloud.md).
+run manifests. `mm_caption.py` calls Ollama unless you give it `--api-base`, and
+a cloud notes endpoint does not by itself replace the route-3 OCR stage. Read
+[cloud.md](references/cloud.md).
 
 ## References to load only as needed
 

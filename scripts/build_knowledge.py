@@ -13,7 +13,7 @@ script still emits artifacts using the raw subtitles (degraded mode, clearly mar
 
 Usage:
     python3 build_knowledge.py --subtitles out/subtitles.json --out-dir out \\
-        --model openbmb/minicpm5-2b --format all
+        --model openbmb/minicpm-v4.7:latest --format all
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ try:  # same-directory single source of truth for the Step-2 model choice
     from hardware_profile import default_text_model
 except ImportError:  # imported as a stray module without scripts/ on sys.path
     def default_text_model() -> str:
-        return os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm5-2b")
+        return os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm-v4.7:latest")
 
 try:
     from net import cloud_auth_header, pop_dead_proxy
@@ -212,7 +212,7 @@ def ask_llm(host: str, model: str, prompt: str) -> str | None:
         return ask_llm_cloud(prompt)
     # num_predict is a HARD cap, not a tuning knob. Without it ollama generates
     # until EOS or until num_ctx is full (16k here), and a small reasoning model
-    # (minicpm5-2b, qwen3.5:0.8b) on a large or degenerate prompt — a 90k-char
+    # (1B-class models like minicpm-v4.7) on a large or degenerate prompt — a 90k-char
     # subtitle dump, or a run with zero segments — can degenerate into an
     # unbounded chain that runs for hours. ollama serialises requests per model,
     # so that one call blocks every later stage AND every later video in a batch.
@@ -752,7 +752,7 @@ def build_analysis(host: str, model: str | None, raw_text: str, source: str,
     # each LLM call on a small, accurate context (small/mid models degrade badly
     # on 18k+ char inputs — repeated output, dropped items, bad timestamps).
     # summary is map(summarize)->reduce(summarize).
-    # 9000 (not 4500): the default text models (minicpm5-2b, qwen3.5:4b) handle
+    # 9000 (not 4500): the default text model (minicpm-v4.7) handles
     # 9k single-task prompts cleanly and it halves the call count, so a 3h
     # lecture (~360k chars, 40 chunks) is tractable while keeping full coverage.
     CHUNK = 9000
@@ -1142,9 +1142,9 @@ def main() -> int:
                          "when the lib is missing)")
     ap.add_argument("--model", default=default_text_model(),
                     help="Ollama text model for summarization/QA (default: the "
-                         "profile's text model — openbmb/minicpm5-2b on low/mid, "
-                         "the VLM pull itself on high tiers; set V2K_TEXT_MODEL "
-                         "or pass --model to override)")
+                         "profile's model — minicpm-v4.7 on every tier, the same "
+                         "pull as the VLM; set V2K_TEXT_MODEL or pass --model to "
+                         "override)")
     ap.add_argument("--title", default=None, help="document title (default: video basename)")
     ap.add_argument("--lang", choices=["zh", "en"], default="zh",
                     help="prompt/output language for summary/QA (default zh; set to en "

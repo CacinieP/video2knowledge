@@ -16,6 +16,7 @@ user's global environment.
 | `build_knowledge.py --api-base` | subtitle or fused audio/OCR text |
 | `build_notes.py --api-base` | narration text for headings/notes |
 | cloud notes plus `--describe-frames` | selected frame images, plus text |
+| `mm_caption.py --api-base` (route-3 OCR) | every selected frame image, plus the OCR prompt |
 | remote `OLLAMA_HOST` | the text/images passed to that remote server |
 
 Tell the user the selected destination and data. Use cloud only when it matches
@@ -37,6 +38,8 @@ variable; do not ask the user to paste them into chat.
 "$PY" "$SKILL_ROOT/scripts/build_knowledge.py" --subtitles "$OUT/subtitles.json" --out-dir "$OUT" --format html --api-base "https://api.example.com/v1" --api-model "text-model" --api-key-env MY_LLM_KEY
 # Text AND selected frame upload:
 "$PY" "$SKILL_ROOT/scripts/build_notes.py" --subtitles "$OUT/subtitles.json" --frames "$OUT/frames/frames.json" --out-dir "$OUT" --describe-frames --api-base "https://api.example.com/v1" --api-model "text-model" --vlm-api-model "vision-model" --api-key-env MY_LLM_KEY
+# Frame upload for route-3 OCR (bypasses Ollama; --api-model defaults to MiniCPM-V-4.7-1B):
+"$PY" "$SKILL_ROOT/scripts/mm_caption.py" --video "/absolute/path/to/slides.mp4" --out-dir "$OUT" --mode dedup --prompt-ocr --api-base "https://api.example.com/v1" --api-model "vision-model" --api-key-env MY_VLM_KEY
 ```
 
 Examples use placeholder endpoints, not a provider recommendation. Cloud ASR
@@ -54,7 +57,9 @@ when diagnosing it; never print credential-store contents.
 
 ## Boundaries
 
-`mm_caption.py` is an Ollama client. A cloud notes endpoint does not automatically
-replace route-3 OCR. Unsupported vision capability is probed, then descriptions
+`mm_caption.py` is an Ollama client unless `--api-base` (or `$V2K_VLM_API_BASE` /
+`$V2K_LLM_API_BASE`) is set; with it, the route-3 OCR stage uploads every selected
+frame. A cloud notes endpoint alone does not automatically replace that OCR stage.
+Unsupported vision capability is probed, then descriptions
 may be skipped with a warning. Report missing descriptions as partial when they
 were requested; do not claim remote text models saw images.

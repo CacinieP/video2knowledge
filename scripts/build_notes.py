@@ -27,7 +27,7 @@ key frames + raw narration excerpts (clearly marked).
 Usage:
     python3 build_notes.py --subtitles out/subtitles.json \\
         --frames out/frames/frames.json --out-dir out \\
-        --max-frames 12 --describe-frames --model openbmb/minicpm5-2b
+        --max-frames 12 --describe-frames --model openbmb/minicpm-v4.7:latest
 """
 from __future__ import annotations
 
@@ -85,9 +85,9 @@ def http_generate(host: str, payload: dict, timeout: int = 420,
 def supports_vision(host: str, model: str) -> bool:
     """True if `model` declares the 'vision' capability (ollama /api/show).
 
-    Needed because the --vlm-model fallback below reuses the TEXT model, and
-    on the low/mid profiles that model is text-only (minicpm5-2b, qwen3.5:0.8b
-    on tiny). Handing a text-only model a base64 image returns HTTP 500 for
+    Needed because the --vlm-model fallback below reuses the TEXT model. The
+    unified default (minicpm-v4.7) is itself multimodal, but a text-only
+    override (e.g. minicpm5-2b) is still possible. Handing a text-only model a base64 image returns HTTP 500 for
     every key frame, and one description per frame in a tight retry loop is
     enough to take the ollama server down mid-run (observed: 23/23 failures
     followed by connection-refused for the rest of the batch).
@@ -680,7 +680,7 @@ def main() -> int:
             if vlm_model and not supports_vision(args.host, vlm_model):
                 print(f"[notes] {vlm_model} is text-only — skipping 画面 descriptions "
                       f"instead of failing once per key frame. Pass --vlm-model "
-                      f"<multimodal>, e.g. openbmb/minicpm-v4.6:latest, to enable them.",
+                      f"<multimodal>, e.g. openbmb/minicpm-v4.7:latest, to enable them.",
                       file=sys.stderr)
                 vlm_model = None
             if not ping(args.host):
