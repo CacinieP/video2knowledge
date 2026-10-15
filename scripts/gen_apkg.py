@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-import random
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -25,7 +26,6 @@ except ImportError:
 
 # Deterministic IDs so reruns are stable (genanki wants unique-but-fixed IDs).
 MODEL_ID = 1830540287
-DECK_ID_BASE = 9120451233
 
 MODEL = genanki.Model(
     model_id=MODEL_ID,
@@ -55,8 +55,15 @@ MODEL = genanki.Model(
 
 def deck_for(name: str) -> genanki.Deck:
     # Stable deck id derived from name so the same deck name maps to the same id.
-    did = (DECK_ID_BASE + sum(ord(c) for c in name)) % (2**31)
+    did = int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:8], "big") % (2**31 - 1) + 1
     return genanki.Deck(deck_id=did, name=name)
+
+
+def note_guid(deck_name: str, row: dict, source_id: str = "") -> str:
+    """Stable across row insertion/reordering and answer edits, source-scoped."""
+    identity = [deck_name, source_id or row.get("source", ""), row.get("timestamp", ""),
+                row.get("question", "").strip()]
+    return genanki.guid_for(json.dumps(identity, ensure_ascii=False))
 
 
 def main() -> int:
@@ -64,6 +71,9 @@ def main() -> int:
     ap.add_argument("--csv", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--deck", default="视频知识卡")
+    ap.add_argument("--source-id", default="",
+                    help="stable video/course identity; defaults to the absolute "
+                         "CSV path. Set explicitly when moving exports between machines.")
     args = ap.parse_args()
 
     if not args.csv.is_file():
@@ -80,7 +90,7 @@ def main() -> int:
                 fields=[row.get("question", ""), row.get("answer", ""),
                         row.get("tags", ""), row.get("timestamp", ""),
                         row.get("source", "")],
-                guid=genanki.guid_for(row.get("question", "") + "|" + str(n)),
+                guid=note_guid(args.deck, row, args.source_id or str(args.csv.resolve())),
             )
             deck.add_note(note)
             n += 1

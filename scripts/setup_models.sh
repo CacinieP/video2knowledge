@@ -164,7 +164,7 @@ if [[ ! -d "$VENV_DIR" ]]; then
     # may be an MSYS/mingw build whose venvs (bin/ layout, no ctranslate2
     # wheels) cannot host faster-whisper. uv sidesteps that entirely.
     uv venv "$VENV_DIR" >/dev/null
-    uv pip install --python "$(venv_python)" --quiet "faster-whisper>=1.0.3" "av<19" genanki python-docx fpdf2
+    uv pip install --python "$(venv_python)" --quiet -r "$ROOT/requirements.txt"
   else
     PY_BIN="$(command -v python3 || command -v python)"
     case "$(uname -s)" in
@@ -183,19 +183,19 @@ if [[ ! -d "$VENV_DIR" ]]; then
     esac
     "$PY_BIN" -m venv "$VENV_DIR"
     "$(venv_python)" -m pip install --quiet --upgrade pip
-    "$(venv_python)" -m pip install --quiet "faster-whisper>=1.0.3" "av<19" genanki python-docx fpdf2
+    "$(venv_python)" -m pip install --quiet -r "$ROOT/requirements.txt"
   fi
   log "Installed faster-whisper + genanki into venv"
 else
   log "venv exists: $VENV_DIR (skipping create)"
 fi
 VENV_PY="$(venv_python)" || { log "ERROR: venv dir exists but no python found inside"; exit 1; }
-"$VENV_PY" -c "import faster_whisper" 2>/dev/null || {
-  log "venv missing faster-whisper — installing..."
+"$VENV_PY" -c "import faster_whisper, genanki, pypinyin" 2>/dev/null || {
+  log "venv missing pipeline dependencies — installing..."
   if have uv; then
-    uv pip install --python "$VENV_PY" --quiet "faster-whisper>=1.0.3" "av<19" genanki python-docx fpdf2
+    uv pip install --python "$VENV_PY" --quiet -r "$ROOT/requirements.txt"
   else
-    "$VENV_PY" -m pip install --quiet "faster-whisper>=1.0.3" "av<19" genanki python-docx fpdf2
+    "$VENV_PY" -m pip install --quiet -r "$ROOT/requirements.txt"
   fi
 }
 
