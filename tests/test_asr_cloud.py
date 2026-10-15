@@ -427,7 +427,9 @@ def test_mimo_run_uses_chunk_bounds_as_timestamps(monkeypatch, tmp_path):
         {"start": 28.0, "end": 55.0, "text": "第二段"},
         {"start": 80.0, "end": 100.0, "text": "第四段"},
     ]
-    assert seen_spans == [(0.0, 28.0), (28.0, 27.0), (55.0, 25.0), (80.0, 20.0)]
+    # Extraction runs in worker threads: call order is intentionally unspecified.
+    # Check every boundary (including multiplicity); ordered output is asserted above.
+    assert sorted(seen_spans) == [(0.0, 28.0), (28.0, 27.0), (55.0, 25.0), (80.0, 20.0)]
     assert meta["duration"] == 100.0
     assert meta["language"] == "zh"
     # the temp chunk directory must not survive the run
