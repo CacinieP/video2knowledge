@@ -324,6 +324,11 @@ python3 scripts/build_notes.py \
   ```
   GitHub Actions 在 Python 3.11 / 3.12 上执行上述检查。默认运行依赖统一列在
   `requirements.txt`；`setup_models.sh` 会安装并补齐，包括错词修复的 `pypinyin`。
+  Linux 中文 PDF 导出还需字体，例如 `sudo apt-get install fonts-wqy-microhei`。
+
+维护者发布：更新 `.github/release.json` 和对应发布说明，在合并提交信息中加入
+`[release]`。仅主分支 push 且两组回归通过后，CI 才发布指向该提交的 GitHub Release；
+普通推送和 PR 不发布。
 
 ### 批处理续跑与产物身份
 

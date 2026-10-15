@@ -30,3 +30,37 @@ jobs:
         run: python -m pytest -q
       - name: Run binary frame-stream regression
         run: python tests/test_pgm_stream.py
+
+  release:
+    # Publication is opt-in per merge commit; ordinary pushes only run tests.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
+    needs: regression
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read reviewed release plan
+        id: plan
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path('.github/release.json').read_text(encoding='utf-8'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              for key in ('tag', 'name', 'notes_file'):
+                  value = plan[key]
+                  if not isinstance(value, str) or '\n' in value or '\r' in value:
+                      raise SystemExit(f'Invalid release value: {key}')
+                  out.write(f'{key}={value}\n')
+          PY
+      - name: Publish tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+          RELEASE_NAME: ${{ steps.plan.outputs.name }}
+          RELEASE_NOTES: ${{ steps.plan.outputs.notes_file }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          gh release create "$RELEASE_TAG" --target "$RELEASE_SHA" \
+            --title "$RELEASE_NAME" --notes-file "$RELEASE_NOTES" --latest
