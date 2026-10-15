@@ -1,122 +1,68 @@
-# Path 1 — Multimodal Captioning (Ollama VLM)
+# Route 1: visual-only notes and on-screen OCR
 
-Path 1 reads a video **visually**: sample frames with ffmpeg, send each frame to a
-native multimodal small model (≤4B) via Ollama, and stitch the per-frame captions
-into a timestamped subtitle document.
+Use when there is no usable speech or the request is explicitly visual-only.
+An audio track containing music/filler does not make the source a lecture.
+Read [runtime.md](runtime.md) first. Commands use absolute paths and the main
+venv interpreter, never an activated shell assumed to persist.
 
-## When to choose Path 1
+## Illustrated notes for a silent video
 
-- No usable speech track (silent screen recording, slide-only video, music B-roll).
-- Speech is unreliable (heavy accent, noise) and you want visual grounding.
-- You need on-screen text / diagrams / charts captured (ASR cannot see these).
-- You want to cross-check ASR output against what is actually on screen.
-
-Path 1 is **slower and less precise on timing** than Path 2 (frame interval sets the
-granularity), so prefer Path 2 when a clean speech track exists.
-
-## Model
-
-The default VLM is **picked by your hardware profile** (`scripts/hardware_profile.py`):
-
-| Profile | VLM | Size |
-|---|---|---|
-| `tiny` (RAM < 6 GB) | `qwen3.5:0.8b` | ~1.0 GB |
-| `low` / `low-mac` / `mid` (6–16 GB) | `openbmb/minicpm-v4.6:latest` | 1.6 GB |
-| `high` (16–32 GB) | `qwen3.5:4b` | ~3.4 GB |
-| `high-gpu` / `max` | `qwen3.5:9b` / `qwen3.8:27b` | 6.6 GB / 18 GB |
-
-On the most common machines (8–16 GB) this resolves to `minicpm-v4.6`, which is
-the tested default. Override with `--model` or `VLM_MODEL=`. Full profile table
-in `references/hardware-profiles.md`.
-
-Other VLMs that work the same way (via `ollama pull`):
-`qwen3.5` 2b/4b (unified text+vision, strong OCR / on-screen text, 256K ctx),
-`minicpm-v4.5` (8B GPT-4o-class), `moondream` (very fast, terse, legacy).
-
-## Ollama vision API
-
-The script calls `POST {OLLAMA_HOST}/api/generate` with:
-
-```json
-{
-  "model": "openbmb/minicpm-v4.6:latest",
-  "prompt": "<caption prompt>",
-  "images": ["<base64 jpg>"],
-  "stream": false,
-  "options": {"temperature": 0.2}
-}
-```
-
-- `images` is a list of **base64-encoded** raw image bytes (no data-URL prefix).
-- `stream: false` returns the whole response in one JSON object (`.response`).
-- Low temperature (0.2) keeps captions consistent across frames.
-
-## Sampling strategy
-
-`extract_frames.py` uses `ffmpeg -vf fps=1/interval`. The default interval is **2.0s**
-(~30 frames/min). Tuning:
-
-| Goal | `--interval` |
-|---|---|
-| Slides / slow content | 3.0–5.0 |
-| Talking head | 2.0 (default) |
-| Fast demo / tutorial | 0.5–1.0 |
-
-For dense content use `--fps 1` (1 frame/sec) instead of `--interval`. Frame
-timestamps in `frames.json` are derived from the video's true duration (even
-spacing), not from `index × interval`, so they stay accurate.
-
-### dedup mode (slide/screencast videos)
-
-`--mode dedup` replaces fixed intervals with perceptual dedup: dense sampling
-(default `--dedup-fps 1`) + dHash, keeping a frame only when it visibly changed.
-A change is kept at its first **settled** frame (successor nearly identical,
-`--settle-window` default 2s, plus a blank/black mean-luma gate), so fades land
-on the final stable slide, not mid-transition. Knobs: `--dedup-hamming` (default
-10 of 64 bits), `--hash-size` (8 → 64-bit, 16 → 256-bit for dense slides),
-`--hash-mode dual` (dHash+aHash for flat/gradient content dHash cannot see —
-scale the threshold ~2x), and `--max-frames` (default 360, cluster-stratified
-budget: every change burst keeps its settled final frame). See
-`references/path3-fusion.md` for the full story.
-
-## Prompt
-
-The caption prompt (in `mm_caption.py`) asks the model for **≤40-char Chinese
-descriptions** focusing on objects, on-screen text, actions, and diagrams, with no
-preamble. Edit `PROMPT` in the script to change language/style globally.
-
-## Outputs
-
-```
-<out-dir>/
-├── frames/
-│   ├── frame_000001.jpg ... frame_NNNNNN.jpg
-│   └── frames.json                 # {"file","t"} per frame
-├── captions.srt                    # timestamped subtitles
-└── captions.json                   # [{start,end,text}, ...]
-```
-
-`captions.json` is consumed by `build_knowledge.py` exactly like Path 2's
-`subtitles.json` (the loader detects the schema automatically).
-
-## Memory
-
-Peak memory is flat because the script captions **sequentially** (one frame at a
-time, no batching). The profile picker already matches the VLM size to your RAM
-(see table above). If you override to a bigger VLM and hit OOM, raise `--interval`
-to reduce frame count, or close other apps.
-
-## End-to-end example
+This recipe deliberately supplies an empty speech transcript: the notes builder
+then labels the result pure-visual and does not invent narrator quotations.
+Set `$VLM` from the live profile or an already-tested installed vision model.
 
 ```bash
-source ~/.zcode/skills/video2knowledge/.venv/bin/activate
-cd ~/.zcode/skills/video2knowledge
-python3 scripts/mm_caption.py \
-  --video ~/Movies/demo.mp4 \
-  --out-dir runs/demo-mm \
-  --model openbmb/minicpm-v4.6:latest \
-  --interval 2.0
-python3 scripts/build_knowledge.py \
-  --subtitles runs/demo-mm/captions.json \
-  --out-dir runs/demo-mm --format all
+SKILL_ROOT="/absolute/path/to/video2knowledge"
+PY="$SKILL_ROOT/.venv/bin/python"
+[ -x "$PY" ] || PY="$SKILL_ROOT/.venv/Scripts/python.exe"
+VIDEO="/absolute/path/to/silent-demo.mp4"
+OUT="/absolute/path/to/runs/silent-demo"
+VLM="openbmb/minicpm-v4.6:latest"  # example; use a tested installed VLM
+mkdir -p "$OUT"
+"$PY" "$SKILL_ROOT/scripts/extract_frames.py" --video "$VIDEO" --out-dir "$OUT/frames" --mode dedup
+"$PY" -c 'import json,sys; from pathlib import Path; Path(sys.argv[1]).write_text(json.dumps({"segments": []}), encoding="utf-8")' "$OUT/visual-only.json"
+"$PY" "$SKILL_ROOT/scripts/build_notes.py" --subtitles "$OUT/visual-only.json" --frames "$OUT/frames/frames.json" --out-dir "$OUT" --describe-frames --vlm-model "$VLM" --lang zh
 ```
+
+Deliver `notes.md`, `notes-distilled.md`, `notes.html` and their frame folder.
+The two Markdown views may be identical because there is no spoken quotation.
+Check that descriptions are present; if the VLM fails, label frame-only output
+partial rather than claiming visual content was understood. Without a model,
+frames can still be extracted, but that is not a completed semantic note.
+
+The local frame-description prompt is currently Chinese; `--lang en` does not
+translate it. For an English-only silent task, report this limitation instead of
+promising English semantic visual notes or silently modifying the prompt.
+
+## Requested on-screen transcription
+
+Use `mm_caption.py` for timestamped visual descriptions, or `--prompt-ocr` for
+visible text/tables/formulas. With the same bindings as above (in the SAME shell):
+
+```bash
+"$PY" "$SKILL_ROOT/scripts/mm_caption.py" --video "$VIDEO" --out-dir "$OUT" --model "$VLM" --mode dedup --prompt-ocr
+```
+
+Outputs: `captions.json` (list of `{start,end,text}`), `captions.srt`, `frames/`.
+These are visual OCR/captions, not spoken subtitles. Do not present them as
+verbatim teacher speech or run the Mandarin homophone corrector over OCR text.
+`mm_caption.py` defaults to MiniCPM-V 4.6; the installer profile does NOT
+automatically change this CLI default, so pass `--model` explicitly.
+
+For a requested knowledge document, `build_knowledge.py --subtitles captions.json`
+can consume visual text. Very short visual text may hit its speech-density guard;
+report this limitation and deliver OCR + visual notes rather than disabling guards
+or fabricating a summary/cards. Do not give captions to the notes builder as if
+there were spoken narration; use the empty-speech recipe above.
+
+## Sampling and limits
+
+- Use `--mode dedup` for slides/boards/screens; the frame cap is 360 by default.
+- Use `--interval 2.0` for uniformly sampled general video.
+- `--hash-size 16 --dedup-hamming 20` can preserve smaller slide changes.
+- `--hash-mode dual` adds flat/gradient sensitivity; adjust thresholds accordingly.
+- Sampling fewer frames reduces requests, not the resident model weight memory.
+
+The captions endpoint is the Ollama `/api/generate` API. `build_notes.py`
+supports a separate cloud VLM route, described in [cloud.md](cloud.md); that does
+not make `mm_caption.py` an OpenAI-compatible client.

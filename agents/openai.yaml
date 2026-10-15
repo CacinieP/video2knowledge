@@ -1,4 +1,4 @@
 interface:
   display_name: "Video to Knowledge"
-  short_description: "Video to timestamped subtitles and knowledge artifacts"
-  default_prompt: "Use $video2knowledge to turn this video into timestamped subtitles and structured knowledge artifacts (knowledge doc, HTML, Anki cards)."
+  short_description: "Local video notes, visual evidence and study cards"
+  default_prompt: "Use $video2knowledge to turn this local video into source-grounded Markdown and HTML notes, reporting the route, artifacts and any incomplete outputs."

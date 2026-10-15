@@ -1,5 +1,30 @@
 # Knowledge Document Templates (Step 2.1)
 
+## Contents
+
+- [Available placeholders](#available-placeholders)
+- [Built-in templates](#built-in-templates)
+- [Custom templates](#custom-templates)
+- [本节目标](#)
+- [章节时间轴](#)
+- [必背知识点](#)
+- [自测题](#)
+- [术语](#)
+- [议题摘要](#)
+- [关键节点](#)
+- [决议与行动项](#)
+- [待跟进 Q&A](#-qa)
+- [TL;DR](#tldr)
+- [步骤时间轴](#)
+- [操作要点](#)
+- [FAQ](#faq)
+- [关键术语](#)
+- [Using a custom template](#using-a-custom-template)
+
+
+Resolve `$SKILL_ROOT` and `$PY` as absolute paths from [runtime.md](runtime.md)
+before running snippets; repeat bindings in each fresh shell.
+
 The knowledge doc is rendered by substituting `{{placeholders}}` in a template file.
 `build_knowledge.py` scans the template text and replaces each known placeholder
 with generated content; unknown placeholders are left intact so you can spot typos.
@@ -34,7 +59,7 @@ summary → timeline → key points → QA → glossary → meta). It is used wh
 | `tutorial-steps.md` | 目标 → 操作步骤 → 参数与要点 → 画面 → 时间轴 → 常见问题 → 术语 → 自检 | software / DAW / instrument walkthroughs, where the reader follows along |
 
 ```bash
-python3 scripts/build_knowledge.py \
+"$PY" "$SKILL_ROOT/scripts/build_knowledge.py" \
   --subtitles runs/lec/subtitles.json --out-dir runs/lec \
   --template assets/templates/revision-cheatsheet.md --format all
 ```
@@ -124,7 +149,7 @@ verbatim. Examples:
 ## Using a custom template
 
 ```bash
-python3 scripts/build_knowledge.py \
+"$PY" "$SKILL_ROOT/scripts/build_knowledge.py" \
   --subtitles runs/lec/subtitles.json \
   --out-dir runs/lec \
   --template ./my-lecture-template.md \
