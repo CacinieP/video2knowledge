@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -78,7 +80,79 @@ def sanitize(rel: str) -> str:
     p = Path(rel.replace("\\", "/"))
     parts = [re.sub(r"[\/:*?\"<>|\s.]+", "_", part).strip("_") or "_"
              for part in p.with_suffix("").parts]
-    return str(Path(*parts))[:200]
+    # Keep the extension and original punctuation in the identity, even though
+    # they are removed from the readable portion. Windows paths are case-folded
+    # by the filesystem, so the suffix also separates case-only names on POSIX.
+    digest = hashlib.sha256(p.as_posix().encode("utf-8")).hexdigest()[:16]
+    readable = str(Path(*parts))[:180].rstrip("/\\")
+    return f"{readable}--{digest}"
+
+
+def fingerprints(video: Path, args) -> dict[str, str]:
+    """Bind resume markers to the source, effective options and pipeline code.
+
+    Size + mtime_ns avoid reading multi-GB videos just to resume. Hotword and
+    glossary file contents are included so editing an @file invalidates ASR.
+    Accumulated OCR vocabulary is deliberately excluded: it evolves during a
+    batch and must not invalidate already-finished videos on every restart.
+    """
+    stat = video.stat()
+    source = [str(video.resolve()), stat.st_size, stat.st_mtime_ns]
+    code = hashlib.sha256()
+    for path in sorted(HERE.glob("*.py")) + sorted(
+            (HERE.parent / "assets").rglob("*.md")):
+        code.update(str(path.relative_to(HERE.parent)).encode("utf-8"))
+        code.update(path.read_bytes())
+    options = {key: value for key, value in vars(args).items()
+               if key not in {"root", "out_root", "order", "only", "limit", "dry_run"}}
+    options["hotwords"] = load_hotwords(args.hotwords)
+    if args.homophone_glossary:
+        options["homophone_glossary"] = load_hotwords(args.homophone_glossary)
+
+    def digest(value) -> str:
+        return hashlib.sha256(json.dumps(value, sort_keys=True,
+                                         default=str).encode("utf-8")).hexdigest()
+
+    asr_keys = {"asr_model", "asr_backend", "asr_python", "hotwords",
+                "no_homophone_fix", "homophone_glossary", "homophone_block",
+                "no_ocr_hotwords"}
+    # Environment overrides affect backend routing, model selection and guards.
+    # Hash values rather than persisting credentials into the run manifest.
+    env = {k: v for k, v in os.environ.items()
+           if k.startswith("V2K_") or k in {"OLLAMA_HOST", "OLLAMA_MODELS"}}
+    common = [source, code.hexdigest(), env]
+    return {"asr": digest([common, {k: v for k, v in options.items() if k in asr_keys}]),
+            "full": digest([common, options])}
+
+
+def read_manifest(run_dir: Path) -> dict:
+    try:
+        data = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def completed(run_dir: Path, expected: dict) -> bool:
+    return ((run_dir / ".done").is_file()
+            and read_manifest(run_dir) == expected
+            and (run_dir / "subtitles.json").is_file()
+            and (run_dir / "knowledge.md").is_file()
+            and (run_dir / "cards.apkg").is_file())
+
+
+def prepare_run(run_dir: Path, expected: dict) -> None:
+    """Invalidate stale checkpoints and allow failed stages to run again."""
+    old = read_manifest(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if old.get("asr") != expected["asr"] or not (run_dir / "subtitles.json").is_file():
+        (run_dir / ".asr_done").unlink(missing_ok=True)
+    (run_dir / ".done").unlink(missing_ok=True)
+    (run_dir / ".failed").unlink(missing_ok=True)
+    manifest = run_dir / "run_manifest.json"
+    tmp = manifest.with_suffix(".tmp")
+    tmp.write_text(json.dumps(expected, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(manifest)
 
 
 def load_hotwords(spec: str) -> str:
@@ -115,6 +189,7 @@ class Batch:
         self.log_lock = threading.Lock()
         self.course_vocab = self.out_root / "course_hotwords.txt"
         self.done_count = 0
+        self.failed_count = 0
         self.total = 0
         self.t0 = time.time()
 
@@ -303,6 +378,7 @@ class Batch:
             [self.py, str(HERE / "gen_apkg.py"),
              "--csv", str(run_dir / "cards.csv"),
              "--out", str(run_dir / "cards.apkg"),
+             "--source-id", video.relative_to(self.args.root).as_posix(),
              "--deck", f"{self.args.deck}::{klass}::{title}"], lg, "B")
         (run_dir / ".done").write_text(
             f"vlm={s[0]:.0f}s merge+build={s[1]:.0f}s notes={s[2]:.0f}s\n",
@@ -311,6 +387,8 @@ class Batch:
 
     def finish(self, video: Path, run_dir: Path, status: str, s: list) -> None:
         self.done_count += 1
+        if status == "failed":
+            self.failed_count += 1
         dur = ""
         try:  # informational duration for the summary row
             dur = f"{__import__('json').loads((run_dir / 'subtitles.json').read_text(encoding='utf-8')).get('duration', 0) / 60:.0f}"
@@ -398,46 +476,45 @@ def main() -> int:
         videos.sort(key=rank)
 
     b = Batch(args)
-    plan = [(v, args.out_root / sanitize(str(v.relative_to(args.root)))) for v in videos]
-    b.total = sum(1 for v, d in plan
-                  if not (d / ".done").exists() and not (d / ".failed").exists())
-    todo = [(v, d) for v, d in plan if not (d / ".done").exists()]
+    plan = [(v, args.out_root / sanitize(str(v.relative_to(args.root))),
+             fingerprints(v, args)) for v in videos]
+    todo = [(v, d, fp) for v, d, fp in plan if not completed(d, fp)]
+    b.total = len(todo[:args.limit] if args.limit else todo)
     log("plan", f"{len(plan)} videos, {len(plan) - len(todo)} already done, "
                 f"{b.total} to process (limit={args.limit or 'all'})")
     if args.dry_run:
-        for v, d in plan[:400]:
-            mark = "DONE " if (d / ".done").exists() else "todo  "
+        for v, d, fp in plan[:400]:
+            mark = "DONE " if completed(d, fp) else "todo  "
             print(f"  {mark} {v.relative_to(args.root)}")
+        b.logf.close()
         return 0
 
-    processed = {"n": 0}
+    todo = todo[:args.limit] if args.limit else todo
+    for _, d, fp in todo:
+        prepare_run(d, fp)
 
     def worker_a():
-        for v, d in plan:
-            if args.limit and processed["n"] >= args.limit:
-                return
-            if (d / ".done").exists():
-                continue
+        for v, d, _ in todo:
             try:
                 b.stage_a(v, d)
-                processed["n"] += 1
             except Exception as e:
                 log("A", f"FAILED {v.name}: {e}")
                 (d / ".failed").write_text(f"stageA: {e}\n", encoding="utf-8")
                 b.blog("A", f"FAILED {v}: {e}\n{traceback.format_exc()}")
 
     def worker_b():
-        for v, d in plan:
-            if (d / ".failed").exists():
-                continue
+        for v, d, _ in todo:
             while not (d / ".asr_done").exists() and not (d / ".failed").exists() \
                     and not (d / ".done").exists() and a_thread.is_alive():
                 time.sleep(5)
             if (d / ".done").exists():
                 continue  # already finished in an earlier invocation — silent
+            if (d / ".failed").exists():
+                b.finish(v, d, "failed", [0, 0, 0])
+                continue
             if not (d / ".asr_done").exists():
-                if (d / ".failed").exists():
-                    b.finish(v, d, "failed", [0, 0, 0])
+                b.blog("B", f"FAILED {v}: ASR worker stopped without a checkpoint")
+                b.finish(v, d, "failed", [0, 0, 0])
                 continue
             try:
                 b.stage_b(v, d)
@@ -450,9 +527,10 @@ def main() -> int:
     a_thread = threading.Thread(target=worker_a, name="stageA", daemon=True)
     a_thread.start()
     worker_b()
-    a_thread.join(timeout=0)
+    a_thread.join()
     log("end", f"batch complete: {b.done_count} processed this run")
-    return 0
+    b.logf.close()
+    return 1 if b.failed_count else 0
 
 
 if __name__ == "__main__":

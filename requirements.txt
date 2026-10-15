@@ -1,0 +1,8 @@
+# Default local pipeline; FunASR and cloud SDKs remain opt-in via setup_models.sh.
+faster-whisper>=1.0.3
+# faster-whisper still passes metadata_errors to av.open (removed in PyAV 19).
+av<19
+genanki>=0.13,<0.14
+pypinyin>=0.55,<0.56
+python-docx>=1.1,<2
+fpdf2>=2.8,<3
