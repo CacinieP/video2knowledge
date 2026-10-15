@@ -21,10 +21,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: requirements-test.txt
-      - name: Install test dependencies and ffmpeg
+      - name: Install test dependencies, ffmpeg and CJK font
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-wqy-microhei
           python -m pip install -r requirements-test.txt
       - name: Run unit and CLI regressions
         run: python -m pytest -q

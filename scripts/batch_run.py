@@ -147,6 +147,11 @@ def prepare_run(run_dir: Path, expected: dict) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     if old.get("asr") != expected["asr"] or not (run_dir / "subtitles.json").is_file():
         (run_dir / ".asr_done").unlink(missing_ok=True)
+    # The inner LLM cache keys only model+prompt, not endpoint/environment or
+    # pipeline code. A stale outer checkpoint must not replay that old output.
+    # Keep the cache on an unchanged failed run so genuine retries still resume.
+    if old.get("full") != expected["full"]:
+        (run_dir / "build_cache.json").unlink(missing_ok=True)
     (run_dir / ".done").unlink(missing_ok=True)
     (run_dir / ".failed").unlink(missing_ok=True)
     manifest = run_dir / "run_manifest.json"

@@ -162,3 +162,26 @@ def test_dry_run_does_not_clear_failure_or_create_manifest(pipeline):
     assert (target / ".failed").read_text() == "prior failure"
     assert not (target / "run_manifest.json").exists()
     assert not state["asr"] and not state["build"]
+
+
+def test_changed_endpoint_invalidates_inner_llm_cache(pipeline, monkeypatch):
+    run, _, _, out = pipeline
+    assert run() == 0
+    target = next(out.rglob("run_manifest.json")).parent
+    cache = target / "build_cache.json"
+    cache.write_text('{"old-model-prompt": "old endpoint response"}')
+    monkeypatch.setenv("V2K_LLM_API_BASE", "https://example.invalid/v1")
+    assert run() == 0
+    assert not cache.exists()
+
+
+def test_unchanged_failed_run_retains_inner_llm_cache(pipeline):
+    run, state, _, out = pipeline
+    state["fail_build"] = True
+    assert run() == 1
+    target = next(out.rglob("run_manifest.json")).parent
+    cache = target / "build_cache.json"
+    cache.write_text('{"model-prompt": "completed chunk"}')
+    state["fail_build"] = False
+    assert run() == 0
+    assert json.loads(cache.read_text()) == {"model-prompt": "completed chunk"}
