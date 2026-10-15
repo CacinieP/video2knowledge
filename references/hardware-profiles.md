@@ -1,8 +1,25 @@
 # Hardware Profiles
 
-`scripts/hardware_profile.py` is the single source of truth for "what model /
+## Contents
+
+- [How it works](#how-it-works)
+- [Profile table](#profile-table)
+- [ASR model sizing rationale](#asr-model-sizing-rationale)
+- [Detection details](#detection-details)
+- [Common machines → expected profile](#common-machines--expected-profile)
+- [Tuning the profiles](#tuning-the-profiles)
+
+
+Resolve `$SKILL_ROOT` and `$PY` as absolute paths from [runtime.md](runtime.md)
+before running snippets; repeat bindings in each fresh shell.
+
+The live `scripts/hardware_profile.py --json` result is the source of truth for "what model /
 backend fits this machine." Every script reads it so you never have to guess
 ASR model size or compute type by hand.
+
+The table is a sizing snapshot, not a guarantee that weights are installed or
+inference works. Pass `vlm_model` explicitly to `mm_caption.py` and notes:
+its CLI default does not automatically follow the installer profile.
 
 ## How it works
 
@@ -14,9 +31,9 @@ and uses the corresponding defaults for the whole pipeline.
 Inspect yours:
 
 ```bash
-python3 scripts/hardware_profile.py            # human-readable
-python3 scripts/hardware_profile.py --json     # machine-readable
-python3 scripts/hardware_profile.py --key asr_model
+"$PY" "$SKILL_ROOT/scripts/hardware_profile.py"            # human-readable
+"$PY" "$SKILL_ROOT/scripts/hardware_profile.py" --json     # machine-readable
+"$PY" "$SKILL_ROOT/scripts/hardware_profile.py" --key asr_model
 ```
 
 Override anything with env vars (highest priority) or CLI flags:
@@ -24,7 +41,7 @@ Override anything with env vars (highest priority) or CLI flags:
 ```bash
 ASR_DEFAULT_MODEL=medium bash scripts/setup_models.sh
 # or per-run:
-python3 scripts/asr_caption.py --video v.mp4 --out-dir o --model large-v3 --device cuda
+"$PY" "$SKILL_ROOT/scripts/asr_caption.py" --video v.mp4 --out-dir o --model large-v3 --device cuda
 ```
 
 ## Profile table
