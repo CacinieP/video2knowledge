@@ -77,15 +77,29 @@ def http_json(url: str, payload: dict, timeout: int = 420,
             time.sleep(30)
 
 
-def ping(host: str) -> None:
+def ping(host: str, model: str | None = None) -> None:
     try:
         # GET /api/tags (POST is not allowed on this endpoint -> 405)
         with urllib.request.urlopen(f"{host}/api/tags", timeout=10) as r:
-            json.loads(r.read().decode())
+            tags = json.loads(r.read().decode())
     except (urllib.error.URLError, OSError) as e:
         print(f"[err] cannot reach ollama at {host} ({e}). "
               f"Start it with: ollama serve", file=sys.stderr)
         sys.exit(2)
+    if model:
+        # fail BEFORE frame extraction, not on frame 1 of N with HTTP 404:
+        # ollama returns 404 per generate call for a tag it has not pulled,
+        # which used to surface only after the (slow) sampling pass. Compare
+        # namespace-free so "minicpm-v4.7" also matches "openbmb/...:latest".
+        def _short(name: str) -> str:
+            return name.removesuffix(":latest").split("/")[-1]
+
+        have = {_short(m.get("name", "")) for m in tags.get("models", [])}
+        if _short(model) not in have:
+            print(f"[err] ollama at {host} has no model '{model}' — server is "
+                  f"up but the tag was never pulled. Fix with: "
+                  f"ollama pull {model}", file=sys.stderr)
+            sys.exit(2)
 
 
 # --- OpenAI-compatible cloud VLM (optional) -----------------------------------
@@ -311,7 +325,7 @@ def main() -> int:
             args.model = "MiniCPM-V-4.7-1B"
         configure_cloud(args.api_base, args.model, args.api_key_env, args.api_key)
     else:
-        ping(args.host)
+        ping(args.host, args.model)
 
     manifest = frames_from(args.video, args.out_dir, args.interval, args.mode,
                            args.dedup_fps, args.dedup_hamming, args.max_frames,
