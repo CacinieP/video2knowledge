@@ -28,9 +28,14 @@ references/path1-multimodal.md). ASR stays tiered and hardware-driven.
   high      16–32 GB   any            medium      int8*        minicpm-v4.7 (1.6 GB)
 
   * int8_float16 when CUDA is present, auto-downgraded to int8 on CPU-only
-    machines (CTranslate2's CPU backend rejects int8_float16 at load).
+    machines (CTranslate2's CPU backend rejects int8_float16 — and plain
+    float16 — at load; verified on Apple Silicon, where "max" used to emit
+    float16 on the CPU device and faster-whisper refused to start).
   high-gpu  >= 8 GB    NVIDIA >=8GB    large-v3    float16      minicpm-v4.7 (1.6 GB)
-  max       > 32 GB    any            large-v3    float16      minicpm-v4.7 (1.6 GB)
+  max       > 32 GB    any            large-v3    float16†     minicpm-v4.7 (1.6 GB)
+
+  † float16 only when the machine really lands on CUDA; on CPU-only hosts the
+    resolver downgrades it to int8, same as the int8_float16 tier.
 
 NVIDIA GPUs short-circuit to high-gpu (CUDA + float16 is always faster than CPU)
 regardless of total RAM, as long as VRAM >= 8 GB.
@@ -384,10 +389,13 @@ def detect() -> dict:
     prof = PROFILES[pname]
     compute = prof["compute"]
     device = select_asr_device(nvidia, cuda_ok)
-    # int8_float16 is a CUDA-only compute type: CTranslate2's CPU backend raises
-    # "target device or backend do not support efficient int8_float16" at load.
-    # Downgrade to plain int8 when CUDA is not actually usable...
-    if compute == "int8_float16" and device != "cuda":
+    # int8_float16 and plain float16 are CUDA-only compute types: CTranslate2's
+    # CPU backend raises "Requested ... compute type, but the target device or
+    # backend do not support efficient ..." at load for both (hit on an M5 Max
+    # where the "max" profile emitted float16 onto the CPU device and
+    # faster-whisper refused to start). Downgrade to plain int8 when CUDA is
+    # not actually usable...
+    if compute in ("int8_float16", "float16") and device != "cuda":
         compute = "int8"
     # ...and upgrade the tiers that settle on plain int8 now that a real CUDA
     # device was verified. Same int8 weights, float16 math: strictly faster,
