@@ -13,7 +13,7 @@ script still emits artifacts using the raw subtitles (degraded mode, clearly mar
 
 Usage:
     python3 build_knowledge.py --subtitles out/subtitles.json --out-dir out \\
-        --model openbmb/minicpm-v4.7:latest --format all
+        --model openbmb/minicpm-v4.7:1b --format all
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ try:  # same-directory single source of truth for the Step-2 model choice
     from hardware_profile import default_text_model
 except ImportError:  # imported as a stray module without scripts/ on sys.path
     def default_text_model() -> str:
-        return os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm-v4.7:latest")
+        return os.environ.get("V2K_TEXT_MODEL", "openbmb/minicpm-v4.7:1b")
 
 try:
     from net import cloud_auth_header, pop_dead_proxy

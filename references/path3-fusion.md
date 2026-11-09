@@ -21,8 +21,8 @@ PY="$SKILL_ROOT/.venv/bin/python"
 [ -x "$PY" ] || PY="$SKILL_ROOT/.venv/Scripts/python.exe"
 VIDEO="/absolute/path/to/slides.mp4"
 OUT="/absolute/path/to/runs/slides"
-VLM="openbmb/minicpm-v4.7:latest"  # unified vision+text pick on every profile
-TEXT="openbmb/minicpm-v4.7:latest" # same pull; pass both explicitly anyway
+VLM="openbmb/minicpm-v4.7:1b"  # unified vision+text pick on every profile (pinned 1.8 GB tag)
+TEXT="openbmb/minicpm-v4.7:1b" # same pull; pass both explicitly anyway
 "$PY" "$SKILL_ROOT/scripts/asr_caption.py" --video "$VIDEO" --out-dir "$OUT" --language zh
 "$PY" "$SKILL_ROOT/scripts/mm_caption.py" --video "$VIDEO" --out-dir "$OUT" --model "$VLM" --mode dedup --prompt-ocr
 "$PY" "$SKILL_ROOT/scripts/hotwords_from_ocr.py" --captions "$OUT/captions.json" --subtitles "$OUT/subtitles.json" --out "$OUT/ocr_hotwords.txt"

@@ -61,11 +61,12 @@ Do not run ASR for a known silent recording. On a narrated screen recording,
 prefer fusion when the screen carries needed information. Prefer installed
 models that work; use the profile's `vlm_model` and `text_model` as explicit
 arguments, since `mm_caption.py` hardcodes its CLI default rather than reading
-the profile. That default is now `openbmb/minicpm-v4.7:latest` — the same native
-multimodal model every profile picks for vision AND text, so one pull covers
-captions/OCR and Step 2 synthesis — but a `VLM_MODEL=`/`V2K_TEXT_MODEL=`
-override does not reach the CLI default, so keep passing them explicitly.
-Do not switch models solely to chase a new version.
+the profile. That default is now `openbmb/minicpm-v4.7:1b` (1.8 GB, pinned tag)
+— the same native multimodal model every profile picks for vision AND text, so
+one pull covers captions/OCR and Step 2 synthesis — but a
+`VLM_MODEL=`/`V2K_TEXT_MODEL=` override does not reach the CLI default, so keep
+passing them explicitly. Do not substitute `:latest`: on this family it is the
+35B MoE (22 GB), not the 1B. Do not switch models solely to chase a new version.
 
 ## 3. Execute the selected recipe
 

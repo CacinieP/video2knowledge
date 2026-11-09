@@ -13,26 +13,28 @@ Local inference is ONE model: ModelBest's minicpm-v4.7 (1B, native multimodal
 — image/video understanding with strong CJK OCR, plus general text reasoning;
 released 2026-10 as the successor of v4.6). It serves every tier for BOTH
 roles — Path-1 visual captioning/OCR and Path-3 text synthesis — so a single
-1.6 GB pull covers the whole local pipeline and the `vlm`/`text` fields below
-always agree. A bigger local model is an explicit override (--model /
+1.8 GB pull covers the whole local pipeline and the `vlm`/`text` fields below
+always agree. The default is the PINNED `:1b` tag: on this family `:latest`
+resolves to the 35B MoE (22 GB) and would swamp the low tiers — never point a
+profile at it. A bigger local model is an explicit override (--model /
 --vlm-model / V2K_TEXT_MODEL), and the alternative for every LLM/VLM stage is
 any OpenAI-compatible /chat/completions endpoint (--api-base; see
 references/path1-multimodal.md). ASR stays tiered and hardware-driven.
 
   profile   RAM        GPU            ASR model   compute      VLM & text
   -------   --------   -------------  ----------  -----------  ----------------------
-  tiny      < 6 GB     any            tiny        int8         minicpm-v4.7 (1.6 GB)
-  low       6–8 GB     none/integrated base        int8         minicpm-v4.7 (1.6 GB)
-  low-mac   6–8 GB     Apple Silicon  small       int8         minicpm-v4.7 (1.6 GB)
-  mid       8–16 GB    any            small       int8         minicpm-v4.7 (1.6 GB)
-  high      16–32 GB   any            medium      int8*        minicpm-v4.7 (1.6 GB)
+  tiny      < 6 GB     any            tiny        int8         minicpm-v4.7:1b (1.8 GB)
+  low       6–8 GB     none/integrated base        int8         minicpm-v4.7:1b (1.8 GB)
+  low-mac   6–8 GB     Apple Silicon  small       int8         minicpm-v4.7:1b (1.8 GB)
+  mid       8–16 GB    any            small       int8         minicpm-v4.7:1b (1.8 GB)
+  high      16–32 GB   any            medium      int8*        minicpm-v4.7:1b (1.8 GB)
 
   * int8_float16 when CUDA is present, auto-downgraded to int8 on CPU-only
     machines (CTranslate2's CPU backend rejects int8_float16 — and plain
     float16 — at load; verified on Apple Silicon, where "max" used to emit
     float16 on the CPU device and faster-whisper refused to start).
-  high-gpu  >= 8 GB    NVIDIA >=8GB    large-v3    float16      minicpm-v4.7 (1.6 GB)
-  max       > 32 GB    any            large-v3    float16†     minicpm-v4.7 (1.6 GB)
+  high-gpu  >= 8 GB    NVIDIA >=8GB    large-v3    float16      minicpm-v4.7:1b (1.8 GB)
+  max       > 32 GB    any            large-v3    float16†     minicpm-v4.7:1b (1.8 GB)
 
   † float16 only when the machine really lands on CUDA; on CPU-only hosts the
     resolver downgrades it to int8, same as the int8_float16 tier.
@@ -52,13 +54,13 @@ import sys
 
 # --- thresholds -------------------------------------------------------------
 PROFILES = {
-    "tiny":     {"min_ram": 0,  "asr": "tiny",     "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.7:latest",    "text": "openbmb/minicpm-v4.7:latest",    "note": "极低配/老设备，仅保证能跑"},
-    "low":      {"min_ram": 6,  "asr": "base",     "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.7:latest",    "text": "openbmb/minicpm-v4.7:latest",    "note": "6-8GB 无独立GPU"},
-    "low-mac":  {"min_ram": 6,  "asr": "small",    "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.7:latest",    "text": "openbmb/minicpm-v4.7:latest",    "note": "Apple Silicon 6-8GB（Metal 加速抽帧）"},
-    "mid":      {"min_ram": 8,  "asr": "small",    "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.7:latest",    "text": "openbmb/minicpm-v4.7:latest",    "note": "8-16GB 通用（MiniCPM v4.7 本地全链路）"},
-    "high":     {"min_ram": 16, "asr": "medium",   "compute": "int8_float16", "device": "auto", "vlm": "openbmb/minicpm-v4.7:latest",    "text": "openbmb/minicpm-v4.7:latest",    "note": "16-32GB，可上 medium"},
-    "high-gpu": {"min_ram": 8,  "asr": "large-v3", "compute": "float16",      "device": "cuda", "vlm": "openbmb/minicpm-v4.7:latest",    "text": "openbmb/minicpm-v4.7:latest",    "note": "NVIDIA >=8GB VRAM，CUDA 全速"},
-    "max":      {"min_ram": 32, "asr": "large-v3", "compute": "float16",      "device": "auto", "vlm": "openbmb/minicpm-v4.7:latest",    "text": "openbmb/minicpm-v4.7:latest",    "note": "工作站/服务器 >32GB"},
+    "tiny":     {"min_ram": 0,  "asr": "tiny",     "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.7:1b",    "text": "openbmb/minicpm-v4.7:1b",    "note": "极低配/老设备，仅保证能跑"},
+    "low":      {"min_ram": 6,  "asr": "base",     "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.7:1b",    "text": "openbmb/minicpm-v4.7:1b",    "note": "6-8GB 无独立GPU"},
+    "low-mac":  {"min_ram": 6,  "asr": "small",    "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.7:1b",    "text": "openbmb/minicpm-v4.7:1b",    "note": "Apple Silicon 6-8GB（Metal 加速抽帧）"},
+    "mid":      {"min_ram": 8,  "asr": "small",    "compute": "int8",         "device": "cpu",  "vlm": "openbmb/minicpm-v4.7:1b",    "text": "openbmb/minicpm-v4.7:1b",    "note": "8-16GB 通用（MiniCPM v4.7 本地全链路）"},
+    "high":     {"min_ram": 16, "asr": "medium",   "compute": "int8_float16", "device": "auto", "vlm": "openbmb/minicpm-v4.7:1b",    "text": "openbmb/minicpm-v4.7:1b",    "note": "16-32GB，可上 medium"},
+    "high-gpu": {"min_ram": 8,  "asr": "large-v3", "compute": "float16",      "device": "cuda", "vlm": "openbmb/minicpm-v4.7:1b",    "text": "openbmb/minicpm-v4.7:1b",    "note": "NVIDIA >=8GB VRAM，CUDA 全速"},
+    "max":      {"min_ram": 32, "asr": "large-v3", "compute": "float16",      "device": "auto", "vlm": "openbmb/minicpm-v4.7:1b",    "text": "openbmb/minicpm-v4.7:1b",    "note": "工作站/服务器 >32GB"},
 }
 
 
@@ -428,7 +430,7 @@ def detect() -> dict:
 # no /proc and no nvidia-smi): keep the unified v4.7 pull — one model already
 # serves every other stage, and a separate fallback text model would force a
 # second download on machines that could not even run the detector.
-FALLBACK_TEXT_MODEL = "openbmb/minicpm-v4.7:latest"
+FALLBACK_TEXT_MODEL = "openbmb/minicpm-v4.7:1b"
 
 _default_text_model: str | None = None
 

@@ -12,7 +12,7 @@ visual grounding that ASR alone cannot provide.
 
 Usage:
     python3 mm_caption.py --video in.mp4 --out-dir out \\
-        --model openbmb/minicpm-v4.7:latest --interval 2.0
+        --model openbmb/minicpm-v4.7:1b --interval 2.0
 
 Cloud (any OpenAI-compatible /chat/completions vision endpoint, bypasses
 Ollama entirely):
@@ -265,7 +265,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Multimodal captioning via Ollama VLM")
     ap.add_argument("--video", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
-    ap.add_argument("--model", default="openbmb/minicpm-v4.7:latest")
+    ap.add_argument("--model", default="openbmb/minicpm-v4.7:1b")
     ap.add_argument("--mode", choices=["interval", "dedup"], default="interval",
                     help="frame sampling mode (default interval; use dedup for "
                          "slide/PPT/screencast videos)")

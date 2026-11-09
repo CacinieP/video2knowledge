@@ -147,7 +147,7 @@ def test_caption_frame_stays_local_without_cloud(monkeypatch, tmp_path):
         return {"response": "乐谱显示 C 大调音阶"}
 
     monkeypatch.setattr(mc, "http_json", fake_http_json)
-    out = mc.caption_frame("http://localhost:11434", "openbmb/minicpm-v4.7:latest",
+    out = mc.caption_frame("http://localhost:11434", "openbmb/minicpm-v4.7:1b",
                            jpg, mc.PROMPT, ocr=False)
     assert out == "乐谱显示 C 大调音阶"
     assert "images" in ollama_payload  # ollama shape, untouched

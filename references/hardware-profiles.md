@@ -48,19 +48,19 @@ ASR_DEFAULT_MODEL=medium bash scripts/setup_models.sh
 
 | Profile | Trigger | ASR model | compute | device | Model (VLM & text) | Notes |
 |---|---|---|---|---|---|---|
-| `tiny` | RAM < 6 GB | `tiny` | int8 | cpu | `minicpm-v4.7` (1.6 GB) | 老设备/上网本，仅保证能跑，字幕较粗 |
-| `low` | 6–8 GB, no dGPU | `base` | int8 | cpu | `minicpm-v4.7` (1.6 GB) | 通用低配 |
-| `low-mac` | 6–8 GB, Apple Silicon | `small` | int8 | cpu | `minicpm-v4.7` (1.6 GB) | M1/A 系列芯片，Metal 加速抽帧 |
-| `mid` | 8–16 GB | `small` | int8 | cpu | `minicpm-v4.7` (1.6 GB) | **主流笔记本**（含 8GB MacBook） |
-| `high` | 16–32 GB | `medium` | int8_float16 (int8 on CPU-only¹) | auto | `minicpm-v4.7` (1.6 GB) | 16G+，可上 medium |
-| `high-gpu` | NVIDIA ≥ 8 GB VRAM | `large-v3` | float16 | **cuda** | `minicpm-v4.7` (1.6 GB) | 独显直通，CUDA 全速 |
-| `max` | RAM > 32 GB | `large-v3` | float16 | auto | `minicpm-v4.7` (1.6 GB) | 工作站/服务器 |
+| `tiny` | RAM < 6 GB | `tiny` | int8 | cpu | `minicpm-v4.7:1b` (1.8 GB) | 老设备/上网本，仅保证能跑，字幕较粗 |
+| `low` | 6–8 GB, no dGPU | `base` | int8 | cpu | `minicpm-v4.7:1b` (1.8 GB) | 通用低配 |
+| `low-mac` | 6–8 GB, Apple Silicon | `small` | int8 | cpu | `minicpm-v4.7:1b` (1.8 GB) | M1/A 系列芯片，Metal 加速抽帧 |
+| `mid` | 8–16 GB | `small` | int8 | cpu | `minicpm-v4.7:1b` (1.8 GB) | **主流笔记本**（含 8GB MacBook） |
+| `high` | 16–32 GB | `medium` | int8_float16 (int8 on CPU-only¹) | auto | `minicpm-v4.7:1b` (1.8 GB) | 16G+，可上 medium |
+| `high-gpu` | NVIDIA ≥ 8 GB VRAM | `large-v3` | float16 | **cuda** | `minicpm-v4.7:1b` (1.8 GB) | 独显直通，CUDA 全速 |
+| `max` | RAM > 32 GB | `large-v3` | float16 | auto | `minicpm-v4.7:1b` (1.8 GB) | 工作站/服务器 |
 
 ¹ CTranslate2's CPU backend rejects `int8_float16` at load, so a CPU-only
 machine is auto-downgraded to plain `int8`.
 
 One model, on purpose: minicpm-v4.7 is native multimodal (vision + text), so
-the old VLM/text columns merged — every tier pulls exactly one 1.6 GB model
+the old VLM/text columns merged — every tier pulls exactly one 1.8 GB model
 and Step 2 reuses the Path-1 pull. Want a bigger local model? `--model` /
 `--vlm-model` per run, or `V2K_TEXT_MODEL=` globally. Want no local model at
 all? Any OpenAI-compatible `/chat/completions` endpoint takes over every
@@ -70,8 +70,12 @@ LLM/VLM stage via `--api-base` (see path1/path3 references).
 
 - **minicpm-v4.7** (ModelBest / openbmb, Oct 2026): 1B native multimodal —
   image/video understanding with strong CJK OCR plus general text reasoning —
-  successor of v4.6 at the same 1.6 GB pull. It is THE local model on every
-  tier: Path 1 captioning/OCR and Step 2 text synthesis from one download.
+  successor of v4.6, pulled as the pinned `openbmb/minicpm-v4.7:1b` tag
+  (1.8 GB Q4_K_M; `1b-q8_0` = 2.2 GB, `1b-fp16` = 3.1 GB). It is THE local
+  model on every tier: Path 1 captioning/OCR and Step 2 text synthesis from
+  one download. **Do not use `:latest`** — on this family it resolves to the
+  35B MoE (22 GB), which would swamp the `tiny`/`low` tiers; the installer
+  matches the full tag and pulls `:1b` even when only `:latest` is present.
   Needs a current Ollama (the v4.6 line already required 0.30+; upgrade rather
   than model-hunting if a pull fails to load).
 - **Cloud alternative**: any OpenAI-compatible `/chat/completions` endpoint via
@@ -118,7 +122,7 @@ macOS. On Linux/NVIDIA, `device=cuda, compute=float16` gives a large speedup.
 
 All probes are best-effort with layered per-OS fallbacks; detection never
 blocks the pipeline — if every layer fails, `mid` (small/int8/cpu/
-minicpm-v4.7) is the safe fallback.
+minicpm-v4.7:1b) is the safe fallback.
 
 ### RAM detection chain (per OS / version)
 

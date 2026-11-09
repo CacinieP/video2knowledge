@@ -17,7 +17,7 @@ PY="$SKILL_ROOT/.venv/bin/python"
 [ -x "$PY" ] || PY="$SKILL_ROOT/.venv/Scripts/python.exe"
 VIDEO="/absolute/path/to/silent-demo.mp4"
 OUT="/absolute/path/to/runs/silent-demo"
-VLM="openbmb/minicpm-v4.7:latest"  # profile pick on every tier; use a tested installed VLM
+VLM="openbmb/minicpm-v4.7:1b"  # profile pick on every tier (pinned 1.8 GB tag); use a tested installed VLM
 mkdir -p "$OUT"
 "$PY" "$SKILL_ROOT/scripts/extract_frames.py" --video "$VIDEO" --out-dir "$OUT/frames" --mode dedup
 "$PY" -c 'import json,sys; from pathlib import Path; Path(sys.argv[1]).write_text(json.dumps({"segments": []}), encoding="utf-8")' "$OUT/visual-only.json"
@@ -46,8 +46,9 @@ visible text/tables/formulas. With the same bindings as above (in the SAME shell
 Outputs: `captions.json` (list of `{start,end,text}`), `captions.srt`, `frames/`.
 These are visual OCR/captions, not spoken subtitles. Do not present them as
 verbatim teacher speech or run the Mandarin homophone corrector over OCR text.
-`mm_caption.py` defaults to `openbmb/minicpm-v4.7:latest` — the unified
-vision+text model every profile now picks — but the installer profile does NOT
+`mm_caption.py` defaults to `openbmb/minicpm-v4.7:1b` — the unified vision+text
+model every profile now picks (1.8 GB; `:latest` on this family is the 35B MoE
+at 22 GB, never a substitute) — but the installer profile does NOT
 automatically change this CLI default, so pass `--model` explicitly whenever you
 override the profile (`VLM_MODEL=`, a legacy VLM, or a different tag).
 

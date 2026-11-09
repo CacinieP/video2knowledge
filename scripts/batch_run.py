@@ -434,7 +434,7 @@ def main() -> int:
                     help="Ollama text model for knowledge build + notes "
                          "(default: the profile's model — minicpm-v4.7 on "
                          "every tier, the same pull as the VLM)")
-    ap.add_argument("--vlm-model", default="openbmb/minicpm-v4.7:latest")
+    ap.add_argument("--vlm-model", default="openbmb/minicpm-v4.7:1b")
     ap.add_argument("--hotwords", default=DEFAULT_HOTWORDS)
     ap.add_argument("--deck", default="2026注会会计")
     ap.add_argument("--order", default="",

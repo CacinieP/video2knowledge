@@ -27,7 +27,7 @@ key frames + raw narration excerpts (clearly marked).
 Usage:
     python3 build_notes.py --subtitles out/subtitles.json \\
         --frames out/frames/frames.json --out-dir out \\
-        --max-frames 12 --describe-frames --model openbmb/minicpm-v4.7:latest
+        --max-frames 12 --describe-frames --model openbmb/minicpm-v4.7:1b
 """
 from __future__ import annotations
 
@@ -680,7 +680,7 @@ def main() -> int:
             if vlm_model and not supports_vision(args.host, vlm_model):
                 print(f"[notes] {vlm_model} is text-only — skipping 画面 descriptions "
                       f"instead of failing once per key frame. Pass --vlm-model "
-                      f"<multimodal>, e.g. openbmb/minicpm-v4.7:latest, to enable them.",
+                      f"<multimodal>, e.g. openbmb/minicpm-v4.7:1b, to enable them.",
                       file=sys.stderr)
                 vlm_model = None
             if not ping(args.host):
