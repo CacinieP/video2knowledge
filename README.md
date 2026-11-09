@@ -35,7 +35,7 @@
 例如 Claude Code：
 
 ```bash
-git clone --branch v1.9.1 https://github.com/CacinieP/video2knowledge.git ~/.claude/skills/video2knowledge
+git clone --branch v1.10.0 https://github.com/CacinieP/video2knowledge.git ~/.claude/skills/video2knowledge
 ```
 
 其他客户端使用自己的技能发现目录，例如 ZCode 的 `~/.zcode/skills/`、Cursor 的

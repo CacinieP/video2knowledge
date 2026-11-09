@@ -1,5 +1,5 @@
 {
-  "tag": "v1.9.1",
-  "name": "v1.9.1 — Agent Skill 操作手册与可执行配方",
-  "notes_file": ".github/release-notes/v1.9.1.md"
+  "tag": "v1.10.0",
+  "name": "v1.10.0 — 本地推理统一 MiniCPM-V 4.7 与全阶段云端视觉",
+  "notes_file": ".github/release-notes/v1.10.0.md"
 }
