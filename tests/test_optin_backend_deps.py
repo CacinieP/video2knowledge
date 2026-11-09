@@ -220,3 +220,81 @@ def test_reported_python_paths_use_set_u_safely():
     assert 'FUNASR_PY=""' in src, "FUNASR_PY must be initialised for `set -u`"
     r = subprocess.run([_bash(), "-n", str(SETUP)], capture_output=True, text=True, **DECODE)
     assert r.returncode == 0, r.stderr
+
+
+# --------------------------------------------------------------------------
+# the fbank backend funasr does not declare
+#
+# Observed on Apple Silicon (torch 2.15.0, funasr 1.4.24): setup printed
+# "funasr: ready", the weights downloaded, and the first transcription then died
+# inside funasr/utils/fbank.py with
+#   ImportError: torchaudio is not installed and neither is the kaldi-native-fbank
+#   fallback backend.
+# `import funasr` cannot see that, so it must not be the readiness test.
+# --------------------------------------------------------------------------
+
+FBANK_MODULES = ("kaldi_native_fbank", "torchaudio")
+
+
+def test_funasr_install_names_a_fbank_backend():
+    """The funasr block must install one of the two backends funasr looks for."""
+    src = SETUP.read_text(encoding="utf-8")
+    block = src.split('if [ "$WITH_FUNASR" = "1" ]; then')[1]
+    assert "kaldi-native-fbank" in block or "torchaudio" in block, \
+        "funasr venv install names no fbank backend — transcription will ImportError"
+
+
+def test_funasr_readiness_gate_checks_the_backend_not_just_import_funasr():
+    """`import funasr` alone prints a lie; the gate must probe the backend."""
+    src = SETUP.read_text(encoding="utf-8")
+    assert "funasr_has_fbank_backend" in src, \
+        "no fbank-backend probe: setup reports ready on a venv that cannot transcribe"
+    # the readiness line must be inside a branch guarded by the probe
+    ready_at = src.index('log "funasr: ready"')
+    guard = src.rindex("funasr_has_fbank_backend", 0, ready_at)
+    assert ready_at - guard < 600, \
+        "'funasr: ready' is not gated by the fbank-backend probe"
+
+
+def test_existing_broken_funasr_venv_is_repaired_not_skipped():
+    """Idempotent setup must fix a venv an older installer left without a backend."""
+    src = SETUP.read_text(encoding="utf-8")
+    skip_at = src.index('funasr venv exists')
+    block = src[skip_at:skip_at + 2000]
+    assert "funasr_has_fbank_backend" in block, \
+        "the 'venv exists' path skips create AND the backend repair"
+
+
+def test_backend_recipe_in_the_docstring_matches_the_script():
+    """The hand-built recipe is the documented fallback; it must also be complete."""
+    doc = ASR_FUNASR.read_text(encoding="utf-8")
+    assert "-m venv .venv-funasr" in doc           # fallback stays documented
+    assert "kaldi-native-fbank" in doc or "torchaudio" in doc, \
+        "asr_funasr.py's manual recipe installs no fbank backend"
+
+
+@requires_bash
+def test_the_probe_itself_has_the_right_semantics():
+    """Run the probe's own one-liner against a present and an absent module.
+
+    Offline and model-free: it exercises the checker, not funasr.
+    """
+    import re
+
+    src = SETUP.read_text(encoding="utf-8")
+    m = re.search(r'funasr_has_fbank_backend\(\) \{\n(.*?)\n  \}', src, re.S)
+    assert m, "funasr_has_fbank_backend is not defined as expected"
+    body = m.group(1)
+    quoted = re.search(r'-c "(.*?)"', body)
+    assert quoted, "probe body does not contain a `-c` one-liner"
+    snippet = quoted.group(1).replace('\\', '')
+
+    present = snippet.replace("('kaldi_native_fbank','torchaudio')",
+                              "('numpy',)")
+    assert subprocess.run([sys.executable, "-c", present]).returncode == 0, \
+        "probe must pass when a backend is importable"
+    absent = snippet.replace("('kaldi_native_fbank','torchaudio')",
+                             "('definitely_not_installed_module',)")
+    assert subprocess.run([sys.executable, "-c", absent]).returncode != 0, \
+        "probe must fail when no backend is importable"
+
