@@ -29,6 +29,32 @@ If previewing repairs with `--dry-run`, inspect and then rerun without that flag
 before producing repaired downstream outputs. Skip the built-in Mandarin music
 correction for unrelated languages/domains, or supply a relevant glossary/blocks.
 
+## Fetching the Whisper weights on a restricted network
+
+faster-whisper pulls CTranslate2 weights from Hugging Face on first use. Measured
+on a 2026-11 China connection: the HF endpoint crawled at ~50 KB/s through the
+system proxy and hf-mirror.com at ~30 KB/s, so `large-v3` stalls for hours.
+ModelScope hosts the identical CT2 repo and delivered 26 MB/s (~2 minutes for
+`large-v3`). These are one operator's measurements, not a guaranteed mirror SLA.
+
+```bash
+mkdir -p ~/models/faster-whisper-large-v3 && cd ~/models/faster-whisper-large-v3
+for f in config.json model.bin preprocessor_config.json tokenizer.json vocabulary.json; do
+  curl -sLO "https://modelscope.cn/models/Systran/faster-whisper-large-v3/resolve/master/$f"
+done
+```
+
+Any directory holding a CT2 model works as `--model` (a local path bypasses the
+Hub lookup entirely), using the same `$PY`/`$SKILL_ROOT` bindings as the baseline
+above. On CPU-only Apple Silicon the profile picker already downgrades float16 to
+int8; a hand-forced run must pass `--compute-type int8` too, because CTranslate2's
+CPU backend rejects both float16 and int8_float16 at load.
+
+```bash
+"$PY" "$SKILL_ROOT/scripts/asr_caption.py" --video "$VIDEO" --out-dir "$OUT" \
+  --model ~/models/faster-whisper-large-v3 --language zh --compute-type int8
+```
+
 ## Mandarin Paraformer alternative
 
 Prefer an already-working installed backend. `hardware_profile.py --recommend`

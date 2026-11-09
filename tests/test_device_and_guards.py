@@ -77,6 +77,20 @@ def test_detect_falls_back_to_cpu_int8_without_a_usable_runtime(monkeypatch):
     assert d["compute_type"] == "int8"
 
 
+def test_detect_downgrades_plain_float16_on_cpu_only_apple_silicon(monkeypatch):
+    """The 'max' tier ships compute=float16 but lands on device=cpu on Apple
+    Silicon: CTranslate2's CPU backend rejects plain float16 too (M5 Max,
+    faster-whisper large-v3 refused to start). Must downgrade to int8, like
+    the int8_float16 tier already does."""
+    monkeypatch.setattr(hp, "detect_ram_gb", lambda: 64.0)
+    monkeypatch.setattr(hp, "detect_nvidia_vram_gb", lambda: None)
+    monkeypatch.setattr(hp, "detect_apple_silicon", lambda: "Apple M5 Max")
+    d = hp.detect()
+    assert d["profile"] == "max"
+    assert d["device"] == "cpu"
+    assert d["compute_type"] == "int8"
+
+
 def test_detect_upgrades_int8_to_int8_float16_on_cuda(monkeypatch):
     """A tier that settles on plain int8 should still get float16 math when a
     real CUDA device was verified: same int8 weights, no extra VRAM, faster."""

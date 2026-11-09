@@ -12,7 +12,12 @@ visual grounding that ASR alone cannot provide.
 
 Usage:
     python3 mm_caption.py --video in.mp4 --out-dir out \\
-        --model openbmb/minicpm-v4.6:latest --interval 2.0
+        --model openbmb/minicpm-v4.7:1b --interval 2.0
+
+Cloud (any OpenAI-compatible /chat/completions vision endpoint, bypasses
+Ollama entirely):
+    python3 mm_caption.py --video in.mp4 --out-dir out \\
+        --api-base https://api.modelbest.cn/v1 --api-model MiniCPM-V-4.7-1B
 
 Outputs (in --out-dir):
     captions.srt      # timestamped subtitles
@@ -72,18 +77,109 @@ def http_json(url: str, payload: dict, timeout: int = 420,
             time.sleep(30)
 
 
-def ping(host: str) -> None:
+def ping(host: str, model: str | None = None) -> None:
     try:
         # GET /api/tags (POST is not allowed on this endpoint -> 405)
         with urllib.request.urlopen(f"{host}/api/tags", timeout=10) as r:
-            json.loads(r.read().decode())
+            tags = json.loads(r.read().decode())
     except (urllib.error.URLError, OSError) as e:
         print(f"[err] cannot reach ollama at {host} ({e}). "
               f"Start it with: ollama serve", file=sys.stderr)
         sys.exit(2)
+    if model:
+        # fail BEFORE frame extraction, not on frame 1 of N with HTTP 404:
+        # ollama returns 404 per generate call for a tag it has not pulled,
+        # which used to surface only after the (slow) sampling pass. Compare
+        # namespace-free so "minicpm-v4.7" also matches "openbmb/...:latest".
+        def _short(name: str) -> str:
+            return name.removesuffix(":latest").split("/")[-1]
+
+        have = {_short(m.get("name", "")) for m in tags.get("models", [])}
+        if _short(model) not in have:
+            print(f"[err] ollama at {host} has no model '{model}' — server is "
+                  f"up but the tag was never pulled. Fix with: "
+                  f"ollama pull {model}", file=sys.stderr)
+            sys.exit(2)
+
+
+# --- OpenAI-compatible cloud VLM (optional) -----------------------------------
+# Same contract as build_knowledge/build_notes: when an /chat/completions
+# endpoint is configured, every frame caption/OCR goes there instead of local
+# Ollama, so Path 1 (silent videos, slide OCR) works on hosts with no GPU.
+
+_CLOUD = {"api_base": None, "api_model": None, "api_key": None}
+
+
+def configure_cloud(api_base: str | None, api_model: str | None,
+                    api_key_env: str | None, api_key: str | None = None) -> None:
+    """Route caption_frame() to an OpenAI-compatible multimodal endpoint.
+
+    Works with any /chat/completions provider that accepts image_url parts
+    (ModelBest MiniCPM-V-4.7-1B, Qwen-VL, GPT-4o, ...).
+    """
+    if not api_base:
+        return
+    key = api_key or os.environ.get(api_key_env or "OPENAI_API_KEY", "")
+    if not key:
+        env_name = api_key_env or "OPENAI_API_KEY"
+        raise SystemExit(
+            f"[err] --api-base needs API key via --api-key or env var '{env_name}'. "
+            f"export {env_name}=... before running.")
+    model = api_model or "MiniCPM-V-4.7-1B"
+    _CLOUD.update(api_base=api_base.rstrip("/"), api_model=model, api_key=key)
+    print(f"[mm] cloud VLM: model={model} base={api_base}", file=sys.stderr)
+
+
+def caption_frame_cloud(jpg: Path, prompt: str, ocr: bool,
+                        timeout: int = 180, retries: int = 2) -> str:
+    base, model, key = _CLOUD["api_base"], _CLOUD["api_model"], _CLOUD["api_key"]
+    b64 = base64.b64encode(jpg.read_bytes()).decode("utf-8")
+    ext = jpg.suffix.lower()
+    mime = "image/png" if ext == ".png" else "image/jpeg"
+    num_predict = 1024 if ocr else 160
+    payload = {
+        "model": model,
+        "stream": False,
+        "temperature": 0.2,
+        "max_tokens": num_predict,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{mime};base64,{b64}"}}
+                ]
+            }
+        ]
+    }
+    data = json.dumps(payload).encode("utf-8")
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(
+            f"{base}/chat/completions", data=data,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                resp = json.loads(r.read().decode("utf-8"))
+            msg = resp.get("choices", [{}])[0].get("message", {})
+            text = (msg.get("content") or "").strip()
+            if "</think>" in text:
+                text = text.rsplit("</think>", 1)[1].strip()
+            if not ocr:
+                text = text.replace("\n", " ").strip()
+            return text
+        except (urllib.error.HTTPError, urllib.error.URLError,
+                TimeoutError, OSError):
+            if attempt == retries:
+                raise
+            time.sleep(5)
+    return ""
 
 
 def caption_frame(host: str, model: str, jpg: Path, prompt: str, ocr: bool) -> str:
+    if _CLOUD["api_base"]:
+        return caption_frame_cloud(jpg, prompt, ocr)
     b64 = base64.b64encode(jpg.read_bytes()).decode()
     # think:false disables the reasoning chain on thinking models (MiniCPM, Qwen3, ...)
     # so .response holds only the final answer.
@@ -169,7 +265,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Multimodal captioning via Ollama VLM")
     ap.add_argument("--video", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
-    ap.add_argument("--model", default="openbmb/minicpm-v4.6:latest")
+    ap.add_argument("--model", default="openbmb/minicpm-v4.7:1b")
     ap.add_argument("--mode", choices=["interval", "dedup"], default="interval",
                     help="frame sampling mode (default interval; use dedup for "
                          "slide/PPT/screencast videos)")
@@ -199,6 +295,20 @@ def main() -> int:
                     help="similarity ratio above which two OCR texts count as "
                          "the same slide (default 0.9)")
     ap.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
+    ap.add_argument("--api-base",
+                    default=os.environ.get("V2K_VLM_API_BASE") or os.environ.get("V2K_LLM_API_BASE"),
+                    help="OpenAI-compatible chat completions endpoint (e.g. "
+                         "https://api.modelbest.cn/v1). When set, bypasses "
+                         "Ollama. Cascades from $V2K_VLM_API_BASE / $V2K_LLM_API_BASE.")
+    ap.add_argument("--api-model",
+                    default=os.environ.get("V2K_VLM_API_MODEL") or os.environ.get("V2K_LLM_API_MODEL"),
+                    help="model ID for the cloud endpoint (default MiniCPM-V-4.7-1B).")
+    ap.add_argument("--api-key-env",
+                    default=os.environ.get("V2K_VLM_API_KEY_ENV") or os.environ.get("V2K_LLM_API_KEY_ENV") or "OPENAI_API_KEY",
+                    help="env var name holding the API key (default OPENAI_API_KEY).")
+    ap.add_argument("--api-key",
+                    default=os.environ.get("V2K_VLM_API_KEY"),
+                    help="direct API key (overrides $api_key_env).")
     args = ap.parse_args()
 
     if not args.video.is_file():
@@ -206,7 +316,16 @@ def main() -> int:
         return 2
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    ping(args.host)
+    if args.api_base:
+        if args.api_model:
+            args.model = args.api_model
+        elif args.model.startswith("openbmb/"):
+            # local ollama tag -> the same model's cloud ID, so the unified
+            # default works on the cloud path without extra flags
+            args.model = "MiniCPM-V-4.7-1B"
+        configure_cloud(args.api_base, args.model, args.api_key_env, args.api_key)
+    else:
+        ping(args.host, args.model)
 
     manifest = frames_from(args.video, args.out_dir, args.interval, args.mode,
                            args.dedup_fps, args.dedup_hamming, args.max_frames,

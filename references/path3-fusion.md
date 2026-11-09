@@ -21,8 +21,8 @@ PY="$SKILL_ROOT/.venv/bin/python"
 [ -x "$PY" ] || PY="$SKILL_ROOT/.venv/Scripts/python.exe"
 VIDEO="/absolute/path/to/slides.mp4"
 OUT="/absolute/path/to/runs/slides"
-VLM="openbmb/minicpm-v4.6:latest"  # example; use installed tested vision model
-TEXT="openbmb/minicpm5-2b"          # example; use installed tested text model
+VLM="openbmb/minicpm-v4.7:1b"  # unified vision+text pick on every profile (pinned 1.8 GB tag)
+TEXT="openbmb/minicpm-v4.7:1b" # same pull; pass both explicitly anyway
 "$PY" "$SKILL_ROOT/scripts/asr_caption.py" --video "$VIDEO" --out-dir "$OUT" --language zh
 "$PY" "$SKILL_ROOT/scripts/mm_caption.py" --video "$VIDEO" --out-dir "$OUT" --model "$VLM" --mode dedup --prompt-ocr
 "$PY" "$SKILL_ROOT/scripts/hotwords_from_ocr.py" --captions "$OUT/captions.json" --subtitles "$OUT/subtitles.json" --out "$OUT/ocr_hotwords.txt"
@@ -61,6 +61,9 @@ Use `recall_check.py` against a reviewed golden set only as a diagnostic.
 not a general silent-video or multilingual batch driver. Read
 [batch-resume.md](batch-resume.md) before using it.
 
-The OCR stage above still calls Ollama. An optional cloud text/notes endpoint
-can receive fused text and selected notes images; it does not replace
-`mm_caption.py`'s local OCR API. Read [cloud.md](cloud.md).
+The OCR stage above calls Ollama by default; `mm_caption.py --api-base` sends
+every selected frame to an OpenAI-compatible vision endpoint instead, and that
+upload is a separate decision from the cloud text/notes endpoints. An optional
+cloud text/notes endpoint can receive fused text and selected notes images; it
+does not replace the `mm_caption.py` OCR stage unless you point that script at a
+cloud endpoint too. Read [cloud.md](cloud.md).

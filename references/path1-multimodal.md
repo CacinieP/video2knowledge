@@ -17,7 +17,7 @@ PY="$SKILL_ROOT/.venv/bin/python"
 [ -x "$PY" ] || PY="$SKILL_ROOT/.venv/Scripts/python.exe"
 VIDEO="/absolute/path/to/silent-demo.mp4"
 OUT="/absolute/path/to/runs/silent-demo"
-VLM="openbmb/minicpm-v4.6:latest"  # example; use a tested installed VLM
+VLM="openbmb/minicpm-v4.7:1b"  # profile pick on every tier (pinned 1.8 GB tag); use a tested installed VLM
 mkdir -p "$OUT"
 "$PY" "$SKILL_ROOT/scripts/extract_frames.py" --video "$VIDEO" --out-dir "$OUT/frames" --mode dedup
 "$PY" -c 'import json,sys; from pathlib import Path; Path(sys.argv[1]).write_text(json.dumps({"segments": []}), encoding="utf-8")' "$OUT/visual-only.json"
@@ -46,8 +46,11 @@ visible text/tables/formulas. With the same bindings as above (in the SAME shell
 Outputs: `captions.json` (list of `{start,end,text}`), `captions.srt`, `frames/`.
 These are visual OCR/captions, not spoken subtitles. Do not present them as
 verbatim teacher speech or run the Mandarin homophone corrector over OCR text.
-`mm_caption.py` defaults to MiniCPM-V 4.6; the installer profile does NOT
-automatically change this CLI default, so pass `--model` explicitly.
+`mm_caption.py` defaults to `openbmb/minicpm-v4.7:1b` — the unified vision+text
+model every profile now picks (1.8 GB; `:latest` on this family is the 35B MoE
+at 22 GB, never a substitute) — but the installer profile does NOT
+automatically change this CLI default, so pass `--model` explicitly whenever you
+override the profile (`VLM_MODEL=`, a legacy VLM, or a different tag).
 
 For a requested knowledge document, `build_knowledge.py --subtitles captions.json`
 can consume visual text. Very short visual text may hit its speech-density guard;
@@ -63,6 +66,11 @@ there were spoken narration; use the empty-speech recipe above.
 - `--hash-mode dual` adds flat/gradient sensitivity; adjust thresholds accordingly.
 - Sampling fewer frames reduces requests, not the resident model weight memory.
 
-The captions endpoint is the Ollama `/api/generate` API. `build_notes.py`
-supports a separate cloud VLM route, described in [cloud.md](cloud.md); that does
-not make `mm_caption.py` an OpenAI-compatible client.
+The captions endpoint is the Ollama `/api/generate` API. `--api-base` sends each
+frame to an OpenAI-compatible `/chat/completions` vision endpoint instead (no
+Ollama, no local GPU); `--api-model` defaults to the hosted twin
+`MiniCPM-V-4.7-1B`, so prompts are unchanged when switching local↔cloud, and the
+flags cascade from `V2K_VLM_API_BASE` / `V2K_VLM_API_MODEL` / `V2K_VLM_API_KEY_ENV`
+(or the `V2K_LLM_*` equivalents) so a batch can go cloud by environment alone.
+That route uploads every selected frame. `build_notes.py` has its own cloud VLM
+route; see [cloud.md](cloud.md).
