@@ -275,8 +275,35 @@ if [ "$WITH_FUNASR" = "1" ]; then
   # A separate venv, not the main one. funasr pins an old tokenizers and pulls
   # its own torch; resolving that next to faster-whisper's ctranslate2 stack is
   # what motivated the split in the first place.
+  #
+  # `import funasr` is NOT the readiness test it looks like. The feature front-end
+  # needs a fbank backend — kaldi-native-fbank or torchaudio — and funasr 1.4.x
+  # declares neither, so the venv "passes" setup and then dies inside the model
+  # pipeline on the first transcription:
+  #   ImportError: torchaudio is not installed and neither is the
+  #   kaldi-native-fbank fallback backend.  (funasr/utils/fbank.py -> wav_frontend)
+  # That lands AFTER the weights download, so it reads like a torch problem.
+  # kaldi-native-fbank is chosen over torchaudio because it is a small wheel that
+  # does not have to match the torch build.
+  funasr_has_fbank_backend() {
+    "$1" -c "import importlib.util as u; raise SystemExit(0 if any(u.find_spec(m) for m in ('kaldi_native_fbank','torchaudio')) else 1)" >/dev/null 2>&1
+  }
   if [ -n "$(venv_python "$FUNASR_VENV_DIR" || true)" ]; then
     log "funasr venv exists: $FUNASR_VENV_DIR (skipping create)"
+    # Repair in place: a venv built by an older installer is missing the fbank
+    # backend, and re-running setup was supposed to fix things, not skip them.
+    EXISTING_FUNASR_PY="$(venv_python "$FUNASR_VENV_DIR")"
+    if ! funasr_has_fbank_backend "$EXISTING_FUNASR_PY"; then
+      log "existing funasr venv has no fbank backend — installing kaldi-native-fbank..."
+      if have uv; then
+        uv pip install --python "$EXISTING_FUNASR_PY" --quiet kaldi-native-fbank 2>/dev/null \
+          || "$EXISTING_FUNASR_PY" -m pip install --quiet kaldi-native-fbank 2>/dev/null \
+          || log "WARN: could not install kaldi-native-fbank into the existing venv"
+      else
+        "$EXISTING_FUNASR_PY" -m pip install --quiet kaldi-native-fbank 2>/dev/null \
+          || log "WARN: could not install kaldi-native-fbank into the existing venv"
+      fi
+    fi
   else
     log "Creating funasr venv at $FUNASR_VENV_DIR (separate from the main venv)..."
     if have uv; then
@@ -287,26 +314,29 @@ if [ "$WITH_FUNASR" = "1" ]; then
     FUNASR_PY="$(venv_python "$FUNASR_VENV_DIR")"
     # The order matters: the resolver needs the tokenizers floor satisfied
     # before funasr's own pin is satisfiable, hence two passes.
-    log "Installing funasr + torch (~2.5 GB, one time)..."
+    log "Installing funasr + torch + kaldi-native-fbank (~2.5 GB, one time)..."
     if have uv; then
-      uv pip install --python "$FUNASR_PY" --quiet "tokenizers>=0.21" torch funasr || {
+      uv pip install --python "$FUNASR_PY" --quiet "tokenizers>=0.21" torch funasr kaldi-native-fbank || {
         log "WARN: funasr install failed. See the manual recipe in the"
         log "      asr_funasr.py module docstring if this is a platform with"
         log "      no funasr wheel (try: uv pip install funasr --no-binary :all:)."
       }
       uv pip install --python "$FUNASR_PY" --quiet --no-deps funasr 2>/dev/null || true
     else
-      "$FUNASR_PY" -m pip install --quiet "tokenizers>=0.21" torch funasr || {
+      "$FUNASR_PY" -m pip install --quiet "tokenizers>=0.21" torch funasr kaldi-native-fbank || {
         log "WARN: funasr install failed (see the recipe in asr_funasr.py)."
       }
       "$FUNASR_PY" -m pip install --quiet --no-deps funasr 2>/dev/null || true
     fi
   fi
   FUNASR_PY="$(venv_python "$FUNASR_VENV_DIR" || true)"
-  if [ -n "$FUNASR_PY" ] && "$FUNASR_PY" -c "import funasr" 2>/dev/null; then
+  if [ -z "$FUNASR_PY" ] || ! "$FUNASR_PY" -c "import funasr" 2>/dev/null; then
+    log "WARN: funasr still not importable — asr_funasr.py will fail until it is."
+  elif funasr_has_fbank_backend "$FUNASR_PY"; then
     log "funasr: ready"
   else
-    log "WARN: funasr still not importable — asr_funasr.py will fail until it is."
+    log "WARN: funasr imports but has NO fbank backend — asr_funasr.py will die on"
+    log "      feature extraction. Fix: uv pip install --python '$FUNASR_PY' kaldi-native-fbank"
   fi
 fi
 

@@ -37,8 +37,13 @@ That builds a separate .venv-funasr and prints the exact `run python as` line.
 The equivalent by hand, if you would rather not use the script:
 
     python3 -m venv .venv-funasr
-    ./.venv-funasr/bin/pip install "tokenizers>=0.21" funasr torch
+    ./.venv-funasr/bin/pip install "tokenizers>=0.21" funasr torch kaldi-native-fbank
     ./.venv-funasr/bin/pip install --no-deps funasr        # after deps resolve
+
+Note the fbank backend: funasr does not declare one, and without
+`kaldi-native-fbank` (or `torchaudio`) the first transcription raises
+ImportError inside the feature front-end — after the model weights download,
+so it looks like a torch problem. `import funasr` succeeding proves nothing here.
 
 Usage:
 
